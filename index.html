@@ -980,6 +980,25 @@ function groundContext(dateStr, targetIds, constraints){
         L.push(`    PROJECT "${proj.name}": `+st.map(r=>`${r.short} ${r.done}/${r.goal} subs @${r.exp}s (${r.pct}%)`).join(', '));
       }
     }
+  } else {
+    // No explicit targets picked (e.g. "what should I shoot tonight") — auto-surface real
+    // candidates from the full catalog instead of sending the AI nothing to recommend from.
+    const ranked=allTargets().map(t=>{
+      const tn=targetNight(t,ev,constraints||{});
+      const minutes=tn.windows.reduce((a,w)=>a+w.minutes,0);
+      return {t,tn,minutes};
+    }).filter(r=>r.minutes>0).sort((a,b)=>b.minutes-a.minutes).slice(0,18);
+    L.push(`CATALOG CANDIDATES (top ${ranked.length} of the full catalog by tonight's usable minutes — auto-selected, not a pre-committed plan; windows computed against altitude floor ${S.session.altFloor}°, custom horizon${S.horizon?' (imported)':' (none)'}, moon separation ${constraints&&constraints.moonSep?constraints.moonSep:S.session.moonSepDefault}°):`);
+    const m=moonPos(ev.mid);
+    for(const {t,tn} of ranked){
+      const w=tn.windows.map(w=>`${fmtHM(w.from)}–${fmtHM(w.to)} (${fmtDur(w.minutes)}, peak ${w.peakAlt.toFixed(0)}°)`).join('; ')||'no usable window';
+      L.push(`  ${t.id} ${t.n} [${TYPE_NAMES[t.type]||t.type}, ${t.size}', palette ${t.pal}]: ${w}. Transit ${tn.transit?fmtHM(tn.transit)+' (meridian flip)':'outside dark hours'}. Moon sep ~${angSep(t.ra,t.dec,m.ra,m.dec).toFixed(0)}°.`);
+      const proj=S.projects.find(p=>p.targetId===t.id);
+      if(proj){
+        const st=projectStatus(proj);
+        L.push(`    PROJECT "${proj.name}": `+st.map(r=>`${r.short} ${r.done}/${r.goal} subs @${r.exp}s (${r.pct}%)`).join(', '));
+      }
+    }
   }
   const wx=S.weatherCache&&S.weatherCache.data?parseWeather(S.weatherCache.data):null;
   if(wx&&wx.series.cloud&&ev.dusk18){
