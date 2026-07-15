@@ -1344,6 +1344,16 @@ async function fetchNinaImageHistory(){
 }
 
 /* ============ Telescopius ============ */
+/* Auth format confirmed by live testing: "Authorization: Key <key>" — NOT Bearer, and notably the
+   official docs tool at api.telescopius.com generates the wrong header format itself. Base is
+   versioned (v2.2), not the bare root. */
+async function telescopiusGet(path){
+  if(!S.keys.telescopius) throw new Error('Add your Telescopius API key in Settings.');
+  const res=await fetchWithTimeout('https://api.telescopius.com/v2.2'+path, {headers:{'Authorization':'Key '+S.keys.telescopius,'Accept':'application/json'}}, 6000);
+  const txt=await res.text();
+  if(!res.ok) throw new Error('HTTP '+res.status+': '+txt.slice(0,200));
+  try{ return JSON.parse(txt); }catch(e){ return txt; }
+}
 function telescopiusSearchUrl(t){ return 'https://telescopius.com/search?q='+encodeURIComponent(t.id||t.n); }
 /* CSV import: tolerant of Telescopius list exports (looks for name/ra/dec columns) */
 function importTelescopiusCsv(text){
@@ -2362,13 +2372,13 @@ function renderEquipment(){
     <table><thead><tr><th>Short</th><th>Kind</th><th>Sky frac</th><th>Gain</th><th>Offset</th><th>Read noise</th><th>Flat %</th><th>Flat s</th><th>#</th><th></th></tr></thead><tbody>
     ${prof.filters.map((f,i)=>`<tr>
       <td><input type="text" id="fl-s-${i}" value="${esc(f.short)}" style="width:70px" class="${f.unconfirmed?'unconfirmed':''}"></td>
-      <td><select id="fl-k-${i}" style="width:100px">${['broadband','triband','dualband','rgb','narrowband'].map(k=>`<option ${f.kind===k?'selected':''}>${k}</option>`).join('')}</select></td>
+      <td><select id="fl-k-${i}" style="width:100px">${(cam.mono?['broadband','rgb','narrowband']:['broadband','triband','dualband']).map(k=>`<option ${f.kind===k?'selected':''}>${k}</option>`).join('')}</select></td>
       <td><input type="number" id="fl-f-${i}" value="${f.skyFrac}" step="0.005" style="width:66px" title="Fraction of broadband sky the filter passes — drives all sub-length math"></td>
-      <td><input type="number" id="fl-gain-${i}" value="${f.gain??''}" style="width:52px" placeholder="cam" title="${f.gainSource?esc(f.gainSource):'Per-filter gain override — blank uses camera default'}"></td>
-      <td><input type="number" id="fl-off-${i}" value="${f.offset??''}" style="width:52px" placeholder="cam"></td>
-      <td><input type="number" id="fl-rn-${i}" value="${f.readNoise??''}" step="0.1" style="width:56px" placeholder="cam" title="e−, blank uses camera default"></td>
+      <td><input type="number" id="fl-gain-${i}" value="${f.gain??''}" style="width:60px" placeholder="cam" title="${f.gainSource?esc(f.gainSource):'Per-filter gain override — blank uses camera default'}"></td>
+      <td><input type="number" id="fl-off-${i}" value="${f.offset??''}" style="width:60px" placeholder="cam"></td>
+      <td><input type="number" id="fl-rn-${i}" value="${f.readNoise??''}" step="0.1" style="width:62px" placeholder="cam" title="e−, blank uses camera default"></td>
       <td><input type="number" id="fl-b-${i}" value="${f.flatBright??''}" style="width:56px" class="${f.flatBright==null?'unconfirmed':''}"></td>
-      <td><input type="number" id="fl-e-${i}" value="${f.flatExp??''}" style="width:50px" placeholder="auto"></td>
+      <td><input type="number" id="fl-e-${i}" value="${f.flatExp??''}" style="width:66px" placeholder="auto"></td>
       <td><input type="number" id="fl-p-${i}" value="${f.pos}" style="width:40px"></td>
       <td><button class="btn small danger" onclick="delFilter(${i})">✕</button></td></tr>
       ${f.gainSource?`<tr><td colspan="10" class="fieldnote" style="padding-top:0">${esc(f.short)}: ${esc(f.gainSource)}</td></tr>`:''}`).join('')}
@@ -2482,7 +2492,7 @@ function renderSettings(){
     <div class="fieldnote" id="st-astrostatus">100 credits/day; each forecast fetch costs 5 — <b>the test button below uses a real fetch, so it spends 5 too.</b> The app caches for 3h. Reset your key on astrospheric.com if it was ever shared in plain text.</div>
     <label class="f">Telescopius API key (patron)</label>
     <div class="row"><input type="password" id="st-tel" value="${esc(S.keys.telescopius)}" placeholder="optional" style="flex:1"><button class="btn small" id="st-teltest">Test</button></div>
-    <div class="fieldnote" id="st-telstatus">You've got a key configured — live search calls aren't wired up yet, that's on me. CSV import + deep links work today. Test button checks basic connectivity/auth only.</div>
+    <div class="fieldnote" id="st-telstatus">Auth format confirmed via live testing: "Key &lt;key&gt;", not Bearer — even Telescopius's own docs tool has it wrong. Test hits their quote-of-the-day endpoint (free, no rate cost) to check both the key and browser CORS. Live target search still isn't wired up, that's on me — CSV import + deep links work today.</div>
     <h3 style="margin-top:14px">NINA Advanced API</h3>
     <label class="f">API base URL (host:port of the Advanced API plugin)</label>
     <div class="row"><input type="text" id="st-nina" value="${esc(S.nina.url)}" placeholder="http://localhost:1888" style="flex:1">
@@ -2567,15 +2577,19 @@ function renderSettings(){
     const key=$('#st-tel').value.trim();
     const st=$('#st-telstatus');
     if(!key){ st.innerHTML='<span class="bad">Paste a key first.</span>'; return; }
-    st.innerHTML='<span class="spin"></span> testing basic connectivity…';
+    const prevKey=S.keys.telescopius;
+    S.keys.telescopius=key;
+    st.innerHTML='<span class="spin"></span> testing…';
     try{
-      const res=await fetchWithTimeout('https://api.telescopius.com/', {headers:{'Authorization':'Bearer '+key}}, 6000);
-      const txt=await res.text();
-      if(res.ok){ st.innerHTML='<span class="good">✓ Reached api.telescopius.com, HTTP '+res.status+'.</span> <span class="dim">Auth header format is a guess — live search still needs building either way.</span>'; }
-      else { st.innerHTML='<span class="warn">⚠ Reached the server but got HTTP '+res.status+'.</span> <span class="mono" style="font-size:11px">'+esc(txt.slice(0,200))+'</span> Could be the auth header format, not necessarily the key.'; }
+      const data=await telescopiusGet('/quote-of-the-day');
+      save();
+      st.innerHTML='<span class="good">✓ Connected — key and browser CORS both confirmed working.</span>'+(data&&data.text?' <span class="dim" style="font-size:11px">"'+esc(data.text.slice(0,70))+'…"</span>':'');
     }catch(e){
+      S.keys.telescopius=prevKey;
       const cors=/failed to fetch|networkerror|load failed/i.test(e.message);
-      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'.</span> '+(cors?'Likely CORS — confirm the whitelist origin matches your GitHub Pages URL exactly.':'');
+      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'.</span> '+(cors
+        ?'This is the real CORS test — curl can\u2019t check this, only a browser can. A failure here means Telescopius isn\u2019t sending back Access-Control-Allow-Origin for your GitHub Pages origin, separate from whether the key itself works.'
+        :'Key or endpoint issue — the curl test that worked used the same format, so double-check the key was pasted fully.');
     }
   };
   $$('[data-pick]').forEach(b=>b.onclick=async()=>{ await pickFolder(b.dataset.pick); renderSettings(); });
