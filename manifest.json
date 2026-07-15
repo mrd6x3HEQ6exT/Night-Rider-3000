@@ -1,0 +1,16 @@
+{
+  "name": "Night Rider 3000",
+  "short_name": "Night Rider",
+  "description": "Astrophotography session planner — visibility windows, exposure math, projects, and NINA integration.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#070A12",
+  "background_color": "#070A12",
+  "orientation": "any",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Night Rider 3000 — Astro Session Planner</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#070A12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Night Rider">
+<meta name="description" content="Astrophotography session planner — visibility windows, exposure math, projects, and NINA integration.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet">
 <style>
@@ -987,7 +996,8 @@ Rules:
 - ${S.ai.citeNorms?'You MAY reference typical community practice (e.g. "300s is typical for 3nm dual-band at f/5 under Bortle 5–6"), clearly labeled as approximate general knowledge — you have NO live access to Astrobin or any database.':'Do NOT cite community norms; base advice only on the provided physics.'}
 - Be direct and terse. No filler, no over-explanation, no safety caveats about stargazing.
 - When asked for a session plan, output a markdown table with EXACTLY these columns: Target name for each filter | Filter Name | Image Window | Exposure Length | Total Images Needed | Total Time per Filter. Add a final Grand Total row. Below it, a separate Flats table listing ONLY filters used this session with panel brightness (and exposure if known).
-- Respect the user's stated constraints (horizon walls, end times, B-side targets).`;
+- Respect the user's stated constraints (horizon walls, end times, B-side targets).
+- ALWAYS refer to a filter by its exact short name from the FILTERS ground truth (e.g. "RGB Ultra", "Antlia 3nm") — never by manufacturer brand alone (e.g. never just "the Antlia filter"). The user owns multiple filters from the same manufacturer, so a bare brand name doesn't tell them which one; always name the specific filter, in the table AND in prose.`;
 }
 
 /* ============ NINA: horizon import, autosave import, sequence export ============ */
@@ -2636,6 +2646,11 @@ window.addEventListener('DOMContentLoaded',()=>{
   }
   catch(e){ document.body.innerHTML='<div style="padding:40px;font-family:monospace;color:#E05A4E">Boot failed: '+esc(e.message)+'<br><br>'+esc(e.stack||'')+'</div>'; }
 });
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('sw.js').catch(e=>console.warn('Service worker registration failed (app still works normally, just without offline shell caching):', e));
+  });
+}
 async function autoBackupSilent(){
   try{
     const handle=await getFolder('backup', false); // no prompt on boot; only if already granted
