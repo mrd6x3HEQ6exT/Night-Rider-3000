@@ -32,6 +32,15 @@ body.redmode #kitt-scanner{display:block}
   animation:kittsweep 1.1s ease-in-out infinite alternate;}
 @keyframes kittsweep{ from{ left:0; } to{ left:46px; } }
 @media (prefers-reduced-motion: reduce){ #kitt-dot{ animation-duration:3.5s; } }
+/* Blue swish for the main screen — always visible, deliberately calmer than the red night-vision one
+   (dimmer glow, slower sweep) so it reads as ambient flavor, not a distraction */
+.kitt-scanner-blue{width:52px;height:6px;background:#0a1420;border-radius:3px;position:relative;overflow:hidden;border:1px solid #1c3550;display:inline-block;vertical-align:middle;margin-left:8px}
+.kitt-dot-blue{position:absolute;top:0;left:0;width:15px;height:100%;border-radius:3px;
+  background:radial-gradient(ellipse at center,var(--blu) 0%,var(--blu) 40%,rgba(79,143,224,0) 80%);
+  box-shadow:0 0 6px 1px rgba(79,143,224,.55);
+  animation:kittsweepblue 1.8s ease-in-out infinite alternate;}
+@keyframes kittsweepblue{ from{ left:0; } to{ left:37px; } }
+@media (prefers-reduced-motion: reduce){ .kitt-dot-blue{ animation-duration:4.5s; } }
 
 /* Top bar */
 #topbar{display:flex;align-items:center;gap:14px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex-shrink:0}
@@ -452,7 +461,9 @@ if(typeof structuredClone==='undefined'){
 }
 const A = Astronomy; // embedded astronomy-engine
 
-/* Curated DSO catalog sized for ~3.2° × 2.1° FOV (RedCat 91 + IMX455).
+/* Curated DSO catalog for the app's rig(s). Real FOV varies by active profile (e.g. mono/ASI2600MM
+   ~3.0°×2.0°, OSC/ASI6200MC ~4.6°×3.1° — see fovDeg()); one target (Rho Oph, 240') exceeds the
+   smaller mono frame and is a mosaic-support candidate rather than a single-panel target on that rig.
    ra: hours (J2000), dec: degrees, size: arcmin (major axis), sb: approx surface
    brightness class used for SNR reference (mag/arcsec^2), pal: palette suitability. */
 const CATALOG = [
@@ -1459,7 +1470,7 @@ function renderTonight(){
   const pg=$('#page-tonight'); const ev=nightEvents(S.uiNight); const tp=tonightPlan(); const prof=profile();
   const wxCached=S.weatherCache&&S.weatherCache.data;
   pg.innerHTML=`
-  <h2>Tonight</h2>
+  <h2>Tonight <span class="kitt-scanner-blue" title="Night Rider 3000"><span class="kitt-dot-blue"></span></span></h2>
   <div class="sub">Night of ${S.uiNight} · ${prof.name}</div>
   <div class="card tight">
     <div class="row">
@@ -2463,17 +2474,20 @@ function renderSettings(){
     <div class="fieldnote">Whichever isn't the default stays one click away as a secondary button on Tonight. Import/export filenames follow "Subject (D Mon YYYY HHmm)"; images folder expects NINA's default Target/NIGHT_YYYY-MM-DD/LIGHT layout.</div>
   </div>
   <div class="card"><h3>API keys</h3>
-    <label class="f">Anthropic API key</label><input type="password" id="st-anth" value="${esc(S.keys.anthropic)}" placeholder="sk-ant-…">
-    <div class="fieldnote">Stored only in this browser's localStorage. Haiku session plans cost well under a cent each.</div>
-    <label class="f">Astrospheric API key</label><input type="password" id="st-astro" value="${esc(S.keys.astrospheric)}" placeholder="paste key">
-    <div class="fieldnote">100 credits/day; each forecast fetch costs 5. The app caches for 3h. Reset your key on astrospheric.com if it was ever shared in plain text.</div>
-    <label class="f">Telescopius API key (patron)</label><input type="password" id="st-tel" value="${esc(S.keys.telescopius)}" placeholder="optional">
-    <div class="fieldnote">Field reserved — live Telescopius search wiring pending a CORS test with a real key. CSV import + deep links work today.</div>
+    <label class="f">Anthropic API key</label>
+    <div class="row"><input type="password" id="st-anth" value="${esc(S.keys.anthropic)}" placeholder="sk-ant-…" style="flex:1"><button class="btn small" id="st-anthtest">Test</button></div>
+    <div class="fieldnote" id="st-anthstatus">Stored only in this browser's localStorage. Auto-selects Haiku for routine nights, Sonnet for complex ones — typically under a cent, rarely more than a few cents.</div>
+    <label class="f">Astrospheric API key</label>
+    <div class="row"><input type="password" id="st-astro" value="${esc(S.keys.astrospheric)}" placeholder="paste key" style="flex:1"><button class="btn small" id="st-astrotest">Test</button></div>
+    <div class="fieldnote" id="st-astrostatus">100 credits/day; each forecast fetch costs 5 — <b>the test button below uses a real fetch, so it spends 5 too.</b> The app caches for 3h. Reset your key on astrospheric.com if it was ever shared in plain text.</div>
+    <label class="f">Telescopius API key (patron)</label>
+    <div class="row"><input type="password" id="st-tel" value="${esc(S.keys.telescopius)}" placeholder="optional" style="flex:1"><button class="btn small" id="st-teltest">Test</button></div>
+    <div class="fieldnote" id="st-telstatus">You've got a key configured — live search calls aren't wired up yet, that's on me. CSV import + deep links work today. Test button checks basic connectivity/auth only.</div>
     <h3 style="margin-top:14px">NINA Advanced API</h3>
     <label class="f">API base URL (host:port of the Advanced API plugin)</label>
     <div class="row"><input type="text" id="st-nina" value="${esc(S.nina.url)}" placeholder="http://localhost:1888" style="flex:1">
     <button class="btn small" id="st-ninatest">Test connection</button></div>
-    <div class="fieldnote" id="st-ninastatus">Live dashboard / sequence push land in the next build — this stores where to find NINA. Use the imaging PC's IP if Night Rider 3000 runs on a different machine.</div>
+    <div class="fieldnote" id="st-ninastatus">Powers the live dashboard on Tonight and sequence push from your session plans. Use the imaging PC's IP if Night Rider 3000 runs on a different machine.</div>
     <h3 style="margin-top:14px">Feature toggles</h3>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
     ${Object.entries(togNames).map(([k,v])=>`<label class="tog"><input type="checkbox" data-tog="${k}" ${S.toggles[k]?'checked':''}><span class="tr"></span>${v}</label>`).join('')}
@@ -2514,6 +2528,55 @@ function renderSettings(){
       st.innerHTML='<span class="bad">✗ '+esc(e.message)+'.</span> '+(cors
         ?'Check: NINA running, Advanced API plugin installed &amp; enabled, port matches, and that this page is open in a normal browser tab (not a proxied/extension context).'
         :'Check the port in the plugin settings and that the plugin is enabled.');
+    }
+  };
+  $('#st-anthtest').onclick=async()=>{
+    const key=$('#st-anth').value.trim();
+    const st=$('#st-anthstatus');
+    if(!key){ st.innerHTML='<span class="bad">Paste a key first.</span>'; return; }
+    const prevKey=S.keys.anthropic;
+    S.keys.anthropic=key; // askClaude reads from S.keys — set temporarily so the test uses what's in the field, not necessarily what was saved
+    st.innerHTML='<span class="spin"></span> testing…';
+    try{
+      const text=await askClaude('Reply with exactly one word: OK', 'Test', 10, 'claude-haiku-4-5-20251001');
+      save(); // key worked — persist it
+      st.innerHTML='<span class="good">✓ Connected — model replied: "'+esc(text.trim().slice(0,40))+'"</span>';
+    }catch(e){
+      S.keys.anthropic=prevKey; // don't persist a key that failed
+      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> Check the key is copied fully and starts with sk-ant-, and that billing/credits are set up in the Console.';
+    }
+  };
+  $('#st-astrotest').onclick=async()=>{
+    const key=$('#st-astro').value.trim();
+    const st=$('#st-astrostatus');
+    if(!key){ st.innerHTML='<span class="bad">Paste a key first.</span>'; return; }
+    if(!confirm('This makes a real forecast request and spends 5 of your 100 daily Astrospheric credits. Continue?')) return;
+    const prevKey=S.keys.astrospheric;
+    S.keys.astrospheric=key;
+    st.innerHTML='<span class="spin"></span> testing (real request, 5 credits)…';
+    try{
+      const data=await fetchWeather(true);
+      if(!data) throw new Error('No data returned — check the key.');
+      save();
+      st.innerHTML='<span class="good">✓ Connected — forecast received.</span> <span class="mono" style="font-size:11px">'+esc(JSON.stringify(data).slice(0,140))+'…</span>';
+    }catch(e){
+      S.keys.astrospheric=prevKey;
+      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> Check the key is correct and hasn\u2019t been reset since it was pasted.';
+    }
+  };
+  $('#st-teltest').onclick=async()=>{
+    const key=$('#st-tel').value.trim();
+    const st=$('#st-telstatus');
+    if(!key){ st.innerHTML='<span class="bad">Paste a key first.</span>'; return; }
+    st.innerHTML='<span class="spin"></span> testing basic connectivity…';
+    try{
+      const res=await fetchWithTimeout('https://api.telescopius.com/', {headers:{'Authorization':'Bearer '+key}}, 6000);
+      const txt=await res.text();
+      if(res.ok){ st.innerHTML='<span class="good">✓ Reached api.telescopius.com, HTTP '+res.status+'.</span> <span class="dim">Auth header format is a guess — live search still needs building either way.</span>'; }
+      else { st.innerHTML='<span class="warn">⚠ Reached the server but got HTTP '+res.status+'.</span> <span class="mono" style="font-size:11px">'+esc(txt.slice(0,200))+'</span> Could be the auth header format, not necessarily the key.'; }
+    }catch(e){
+      const cors=/failed to fetch|networkerror|load failed/i.test(e.message);
+      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'.</span> '+(cors?'Likely CORS — confirm the whitelist origin matches your GitHub Pages URL exactly.':'');
     }
   };
   $$('[data-pick]').forEach(b=>b.onclick=async()=>{ await pickFolder(b.dataset.pick); renderSettings(); });
