@@ -43,12 +43,12 @@ body.redmode #kitt-scanner{display:block}
 @media (prefers-reduced-motion: reduce){ #kitt-dot{ animation-duration:3.5s; } }
 /* Blue swish for the main screen — always visible, deliberately calmer than the red night-vision one
    (dimmer glow, slower sweep) so it reads as ambient flavor, not a distraction */
-.kitt-scanner-blue{width:52px;height:6px;background:#0a1420;border-radius:3px;position:relative;overflow:hidden;border:1px solid #1c3550;display:inline-block;vertical-align:middle;margin-left:8px}
-.kitt-dot-blue{position:absolute;top:0;left:0;width:15px;height:100%;border-radius:3px;
+.kitt-scanner-blue{width:70px;height:9px;background:#0a1420;border-radius:4px;position:relative;overflow:hidden;border:1px solid #234570;display:inline-block;vertical-align:middle;margin-left:10px}
+.kitt-dot-blue{position:absolute;top:0;left:0;width:20px;height:100%;border-radius:4px;
   background:radial-gradient(ellipse at center,var(--blu) 0%,var(--blu) 40%,rgba(79,143,224,0) 80%);
-  box-shadow:0 0 6px 1px rgba(79,143,224,.55);
-  animation:kittsweepblue 1.8s ease-in-out infinite alternate;}
-@keyframes kittsweepblue{ from{ left:0; } to{ left:37px; } }
+  box-shadow:0 0 9px 2px rgba(79,143,224,.7);
+  animation:kittsweepblue 1.4s ease-in-out infinite alternate;}
+@keyframes kittsweepblue{ from{ left:0; } to{ left:50px; } }
 @media (prefers-reduced-motion: reduce){ .kitt-dot-blue{ animation-duration:4.5s; } }
 
 /* Top bar */
@@ -469,6 +469,7 @@ if(typeof structuredClone==='undefined'){
   window.structuredClone=o=>JSON.parse(JSON.stringify(o)); // every use in this app is plain JSON-safe state
 }
 const A = Astronomy; // embedded astronomy-engine
+const BUILD_ID = '2026-07-15 14:28 UTC';
 
 /* Curated DSO catalog for the app's rig(s). Real FOV varies by active profile (e.g. mono/ASI2600MM
    ~3.0°×2.0°, OSC/ASI6200MC ~4.6°×3.1° — see fovDeg()); one target (Rho Oph, 240') exceeds the
@@ -1432,7 +1433,7 @@ function initShell(){
   ps.addEventListener('change',()=>{ S.activeProfile=ps.value; save(); renderAll(); });
   setInterval(()=>{ $('#foot-clock').textContent=new Date().toLocaleTimeString([],{hour12:false}); },1000);
   const L=S.location;
-  $('#sidebar .foot').innerHTML=`${L.lat.toFixed(4)} ${L.lon<0?'−':''}${Math.abs(L.lon).toFixed(4)}<br>SQM ${L.sqm} · B${L.bortle}<br><span id="foot-clock"></span>`;
+  $('#sidebar .foot').innerHTML=`${L.lat.toFixed(4)} ${L.lon<0?'−':''}${Math.abs(L.lon).toFixed(4)}<br>SQM ${L.sqm} · B${L.bortle}<br><span id="foot-clock"></span><br><span style="opacity:.6">Build ${BUILD_ID}</span>`;
 }
 function renderTopbar(){
   const ps=$('#profilesel');
