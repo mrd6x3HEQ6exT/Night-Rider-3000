@@ -2521,7 +2521,6 @@ function renderSettings(){
       const changed=S.nina.url!==url;
       S.nina.url=url; S.nina.confirmed=true; save();
       st.innerHTML='<span class="good">✓ Connected.</span> <span class="mono">'+esc(JSON.stringify(v).slice(0,160))+'</span>'+(changed?' <span class="dim">(dashboard now enabled on Tonight)</span>':'');
-      renderAll();
     }catch(e){
       if(S.nina.url===url) { S.nina.confirmed=false; save(); }
       const cors=/failed to fetch|networkerror|load failed/i.test(e.message);
