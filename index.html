@@ -50,6 +50,7 @@ body.redmode #kitt-scanner{display:block}
   animation:kittsweepblue 1.4s ease-in-out infinite alternate;}
 @keyframes kittsweepblue{ from{ left:0; } to{ left:50px; } }
 @media (prefers-reduced-motion: reduce){ .kitt-dot-blue{ animation-duration:4.5s; } }
+body.redmode .kitt-scanner-blue{display:none}
 
 /* Top bar */
 #topbar{display:flex;align-items:center;gap:14px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex-shrink:0}
@@ -625,9 +626,13 @@ const DEFAULT_STATE = {
   keys:{anthropic:'', astrospheric:''},
   telescopiusProxyUrl:'',
   telescopiusEnrichment:{}, // id -> {telescopiusIds, telescopiusTypes, telescopiusNames} — for targets that already exist in the built-in catalog
+  targetNotes:{}, // id -> user's own personal notes, distinct from telescopiusEnrichment which is imported metadata
+  checklistItems:['Dew heater on','Darks match tonight\'s gain/offset','Flat panel brightness matches plan','Camera cooling started','Guide camera focused'],
+  checklistState:{}, // dateStr -> {itemIndex: bool}, resets naturally each night since it's keyed by date
+  lastVisit:null,
   nina:{url:'http://localhost:1888', confirmed:false},
   ai:{model:'claude-haiku-4-5-20251001', citeNorms:true, autoModel:true},
-  toggles:{ninaExport:true, ninaImport:true, bside:true, mooncal:true, flipMarkers:true, backup:true, snrPanel:true, bestNights:true, gapWarnings:true, multiTarget:true, nightSheet:true, telescopiusLinks:true, telescopiusApi:false, targetThumbs:true, planner:true, imageQuality:true, aiReviewOnImport:false, autoBackupOnLoad:false, ninaDashboard:true, ninaLiveSync:false, ninaPush:true},
+  toggles:{ninaExport:true, ninaImport:true, bside:true, mooncal:true, flipMarkers:true, backup:true, snrPanel:true, bestNights:true, gapWarnings:true, multiTarget:true, nightSheet:true, telescopiusLinks:true, telescopiusApi:false, targetThumbs:true, planner:true, imageQuality:true, aiReviewOnImport:false, autoBackupOnLoad:false, ninaDashboard:true, ninaLiveSync:false, ninaPush:true, altitudeChart:true, hfrChart:true, satelliteRisk:true, cooldownReminder:true, sessionChecklist:true, visitDigest:true},
   weatherCache:null, // {fetchedAt, dateKey, data, creditsUsedToday, creditsDate}
   uiNight:null,
 };
@@ -717,6 +722,23 @@ function angSep(ra1,d1,ra2,d2){
   const c = Math.sin(d1*D2R)*Math.sin(d2*D2R)+Math.cos(d1*D2R)*Math.cos(d2*D2R)*Math.cos((ra1-ra2)*15*D2R);
   return Math.acos(Math.min(1,Math.max(-1,c)))/D2R;
 }
+/* Whether a target can EVER clear both the altitude floor and the imported horizon profile at this
+   location — independent of date/season, since a target's achievable altitude/azimuth arc depends only
+   on latitude and declination (RA only shifts *when* it's reached, not *how high*). Reuses the exact
+   same altAz/horizonAlt calls and clearance test as targetNight(), sampled across a full diurnal cycle
+   instead of just one night's dark-hours window. */
+function targetEverClearsHorizon(t){
+  const altFloor=S.session.altFloor, hzOff=S.session.horizonOffset;
+  const base=new Date(); base.setHours(0,0,0,0);
+  let bestAlt=-90, clears=false;
+  for(let i=0;i<144;i++){ // every 10 min across 24h — the diurnal arc repeats daily regardless of date
+    const d=new Date(base.getTime()+i*10*60e3);
+    const h=altAz(t.ra,t.dec,d);
+    if(h.altitude>bestAlt) bestAlt=h.altitude;
+    if(h.altitude>=altFloor && h.altitude>=horizonAlt(h.azimuth)+hzOff) clears=true;
+  }
+  return clears ? {clears:true, bestAlt} : {clears:false, bestAlt, limitedBy: bestAlt<altFloor ? 'altitude floor' : 'horizon obstruction'};
+}
 /* Local horizon altitude at azimuth (from imported .hrz or flat 0) */
 function horizonAlt(az){
   const H=S.horizon; if(!H||!H.length) return 0;
@@ -781,6 +803,121 @@ function applyFlipCost(windows, transit, costMin){
     lost += Math.min(w.minutes, costMin) ;
   }
   return {windows:out, lostMin:lost};
+}
+/* Full-catalog seasonal overview: every target, one row, 12 monthly columns — inspired by the same
+   book's overview page ("see at a glance which targets are in the best locations at any time of year").
+   Mid-month sample per target (confirmed fast: ~4s for the full catalog). */
+function scanSeasonalGrid(){
+  const targets=allTargets();
+  const year=new Date().getFullYear();
+  const rows=targets.map(t=>{
+    const months=[];
+    for(let m=0;m<12;m++){
+      const ds=new Date(year,m,15,12).toISOString().slice(0,10);
+      const ev=nightEvents(ds);
+      const tn=targetNight(t,ev,{moonSep:S.session.moonSepDefault});
+      months.push(tn.windows.reduce((a,w)=>a+w.minutes,0));
+    }
+    return {t, months, total:months.reduce((a,b)=>a+b,0)};
+  });
+  return rows.sort((a,b)=>b.total-a.total);
+}
+/* Full-year scan for a single target — full daily precision (confirmed fast: ~1.4s for 365 nights),
+   inspired by Bracken's "Astrophotography Planner" book and the Astro Planner tool's year-ahead view. */
+function scanFullYear(t, moonSep){
+  const start=new Date(); start.setHours(12,0,0,0);
+  const days=[];
+  for(let i=0;i<365;i++){
+    const ds=new Date(start.getTime()+i*86400e3).toISOString().slice(0,10);
+    const ev=nightEvents(ds);
+    const tn=targetNight(t,ev,{moonSep:moonSep??S.session.moonSepDefault});
+    const usable=tn.windows.reduce((a,w)=>a+w.minutes,0);
+    days.push({ds, usable, moonIllum:ev.moonIllum});
+  }
+  // monthly summary: average usable minutes per night in that month
+  const byMonth=Array.from({length:12},()=>({sum:0,n:0}));
+  days.forEach(d=>{ const m=+d.ds.slice(5,7)-1; byMonth[m].sum+=d.usable; byMonth[m].n++; });
+  const monthly=byMonth.map((m,i)=>({month:i, avgMin:m.n?m.sum/m.n:0}));
+  const topNights=days.filter(d=>d.usable>0).sort((a,b)=>b.usable-a.usable).slice(0,10);
+  return {days, monthly, topNights};
+}
+/* Minimal iCalendar (.ics) generator — no library needed, the format is plain text */
+function buildIcs(t, nights){
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const stamp=()=>{ const d=new Date(); return d.toISOString().replace(/[-:]/g,'').split('.')[0]+'Z'; };
+  let ics='BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Night Rider 3000//EN\r\n';
+  nights.forEach((n,i)=>{
+    const [y,m,d]=n.ds.split('-').map(Number);
+    const dt=y+String(m).padStart(2,'0')+String(d).padStart(2,'0');
+    ics+=`BEGIN:VEVENT\r\nUID:nightrider-${t.id}-${dt}-${i}@local\r\nDTSTAMP:${stamp()}\r\nDTSTART;VALUE=DATE:${dt}\r\nSUMMARY:Shoot ${t.id} — ${t.n} (${fmtDur(n.usable)} usable, ${(n.moonIllum*100).toFixed(0)}% moon)\r\nEND:VEVENT\r\n`;
+  });
+  ics+='END:VCALENDAR\r\n';
+  return ics;
+}
+/* Mosaic panel center offsets — standard tangent-plane approximation (RA compressed by 1/cos(dec)),
+   the well-established simplification used throughout amateur mosaic-tiling tools for FOV-scale
+   offsets. Camera rotation is applied so panels tile along the actual frame axes, not raw RA/Dec axes
+   — same "Position Angle" correction professional tools like Voyager use for mosaic planning. */
+function mosaicPanelCenters(t, prof, rows, cols, overlapPct, rotationDeg){
+  const fov=fovDeg(prof);
+  const stepW=fov.w*(1-overlapPct/100), stepH=fov.h*(1-overlapPct/100);
+  const rot=(rotationDeg||0)*Math.PI/180;
+  const panels=[];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const ox=(c-(cols-1)/2)*stepW, oy=(r-(rows-1)/2)*stepH;
+      const dx=ox*Math.cos(rot)-oy*Math.sin(rot), dy=ox*Math.sin(rot)+oy*Math.cos(rot);
+      const ra=t.ra+(dx/15)/Math.cos(t.dec*Math.PI/180);
+      const dec=t.dec+dy;
+      panels.push({row:r, col:c, ra, dec, label:'p'+(r+1)+(c+1)});
+    }
+  }
+  return panels;
+}
+let PREV_VISIT=null; // captured once at boot, before S.lastVisit gets overwritten to "now"
+/* "Since you last visited" digest — general dashboard UX pattern, not astro-specific. References
+   whichever project is furthest behind its pace forecast, since that's the most actionable thing to
+   surface on return. */
+function visitDigest(){
+  if(!PREV_VISIT) return null;
+  const days=Math.floor((Date.now()-PREV_VISIT)/86400e3);
+  if(days<1) return null;
+  const parts=[days+' day'+(days===1?'':'s')+' since your last visit'];
+  if(S.projects.length){
+    const behind=S.projects.map(p=>({p,deficit:projectPaceDeficit(p)*(p.priority||1)})).sort((a,b)=>b.deficit-a.deficit)[0];
+    if(behind&&behind.deficit>0){
+      const st=projectStatus(behind.p);
+      const pct=st.length?Math.round(st.reduce((a,r)=>a+r.pct,0)/st.length):null;
+      if(pct!=null) parts.push('"'+behind.p.name+'" is '+pct+'% complete and furthest behind pace');
+    }
+  }
+  return parts.join(' · ');
+}
+/* Satellite-trail risk: documented pattern (not live tracking) — trails are worst within ~90min of
+   sunset/sunrise, when satellites are still sunlit but the sky's dark enough to image. Informational
+   only; matters most for wide-field/broadband work, less for narrow narrowband framing. */
+function satelliteRiskWindow(w, ev){
+  if(!ev.sunset||!ev.sunrise) return false;
+  const riskEnd=new Date(ev.sunset.getTime()+90*60e3), riskStart=new Date(ev.sunrise.getTime()-90*60e3);
+  return (w.from<riskEnd) || (w.to>riskStart);
+}
+/* Composite target-ranking score — inspired by "Imaging Ease" scoring in modern planning tools.
+   Raw usable minutes alone can't distinguish a bright, well-framed target with a short window from a
+   faint, oversized/undersized one with a long window. Blends usable time, moon quality (softened for
+   narrowband-tolerant palettes), and how well the target's size fits the active profile's frame. */
+function targetScore(t, tn){
+  const usableMin = tn.windows.reduce((a,w)=>a+w.minutes,0);
+  if(usableMin<=0) return 0;
+  const narrowbandFriendly = /SHO|HOO|narrowband/i.test(t.pal||'');
+  let moonSum=0, moonN=0;
+  for(const smp of tn.samples){ if(smp.ok){ moonSum+=Math.min(smp.moonSep,120); moonN++; } }
+  const avgMoonSep = moonN? moonSum/moonN : 90;
+  const moonFactor = narrowbandFriendly ? 0.85+0.15*Math.min(1,avgMoonSep/60) : 0.5+0.5*Math.min(1,avgMoonSep/90);
+  const prof=profile(); const fov=fovDeg(prof);
+  const frameArcmin = Math.min(fov.w,fov.h)*60;
+  const fitRatio = t.size / frameArcmin;
+  const fovFactor = fitRatio<0.05 ? 0.6 : fitRatio>1.3 ? 0.7 : 1 - Math.abs(Math.log(fitRatio/0.4))*0.15;
+  return usableMin * moonFactor * Math.max(0.4,Math.min(1,fovFactor));
 }
 /* Windows for a filter kind, respecting nautical-twilight opt-in for broadband, plus flip-cost trim */
 function filterWindows(t, ev, tp, filt){
@@ -911,7 +1048,7 @@ function parseWeather(data){
     for(const [k,v] of Object.entries(obj)){
       const p=path?path+'.'+k:k;
       if(Array.isArray(v) && v.length>4){
-        const key=/cloud/i.test(p)?'cloud':/transp/i.test(p)?'transparency':/seeing/i.test(p)?'seeing':/wind/i.test(p)&&!/direction/i.test(p)?'wind':/dew/i.test(p)?'dew':/temp/i.test(p)?'temp':null;
+        const key=/cloud/i.test(p)?'cloud':/transp/i.test(p)?'transparency':/seeing/i.test(p)?'seeing':/wind/i.test(p)&&!/direction/i.test(p)?'wind':/dew/i.test(p)?'dew':/smoke|aqi|air.?quality/i.test(p)?'smoke':/temp/i.test(p)?'temp':null;
         if(key && !series[key]){
           series[key]=v.map(x=>{
             if(x==null) return null;
@@ -937,6 +1074,26 @@ function cloudAt(date){
   if(idx<0||idx>=p.series.cloud.length) return null;
   const v=p.series.cloud[idx];
   return v==null?null:(v>1? v/100 : v);
+}
+/* Generic version of cloudAt for any parsed weather dimension (transparency, seeing, dew, temp, smoke) —
+   these were already being tolerantly extracted from Astrospheric's response but never surfaced anywhere. */
+function seriesAt(key, date){
+  const c=S.weatherCache; if(!c||!c.data) return null;
+  const p=parseWeather(c.data); if(!p||!p.series[key]||!p.start) return null;
+  const idx=Math.floor((date-p.start)/3600e3);
+  if(idx<0||idx>=p.series[key].length) return null;
+  return p.series[key][idx];
+}
+/* Dew risk: temp/dew-point spread narrowing below ~3°C(or unit-equivalent)/5°F is the standard
+   community rule-of-thumb warning sign for condensation forming on optics. */
+function dewRiskAt(date){
+  const t=seriesAt('temp',date), d=seriesAt('dew',date);
+  if(t==null||d==null) return null;
+  const spread=Math.abs(t-d);
+  // Astrospheric's temp unit is unconfirmed (C vs F) — a spread this small is a real risk either way,
+  // but treat >20 as "must be Fahrenheit" and scale the threshold accordingly.
+  const threshold = Math.abs(t)>50 ? 5 : 3;
+  return {spread, risk: spread<threshold};
 }
 
 /* ============ Anthropic AI ============ */
@@ -1102,20 +1259,24 @@ function importNinaSession(json){
   return results.filter(r=>r.blocks.length);
 }
 /* Generate a NINA-loadable sequence container prefilled from a plan */
-function exportNinaSequence(plan){
+function exportNinaSequence(plan, override){
   // plan: {targetId, rotation, blocks:[{filterName, exp, count, moonSep}]}
+  // override (optional, for mosaic panels): {ra, dec, nameSuffix} — everything else stays identical
+  // to the already-verified single-target export when this is omitted.
   const t=getTarget(plan.targetId);
-  const raH=Math.floor(t.ra), raM=Math.floor((t.ra-raH)*60), raS=((t.ra-raH)*60-raM)*60;
-  const dneg=t.dec<0, dd=Math.abs(t.dec), dD=Math.floor(dd), dM=Math.floor((dd-dD)*60), dS=((dd-dD)*60-dM)*60;
+  const ra = override?.ra ?? t.ra, dec = override?.dec ?? t.dec;
+  const raH=Math.floor(ra), raM=Math.floor((ra-raH)*60), raS=((ra-raH)*60-raM)*60;
+  const dneg=dec<0, dd=Math.abs(dec), dD=Math.floor(dd), dM=Math.floor((dd-dD)*60), dS=((dd-dD)*60-dM)*60;
   let idc=1; const id=()=>String(idc++);
   const coord=()=>({$id:id(),$type:"NINA.Astrometry.InputCoordinates, NINA.Astrometry",RAHours:raH,RAMinutes:raM,RASeconds:+raS.toFixed(2),NegativeDec:dneg,DecDegrees:dD,DecMinutes:dM,DecSeconds:+dS.toFixed(2)});
+  const nameSuffix = override?.nameSuffix ? ' '+override.nameSuffix : '';
   const seq={
     $id:id(), $type:"NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
-    Target:{$id:id(),$type:"NINA.Astrometry.InputTarget, NINA.Astrometry",Expanded:true,TargetName:t.id+" "+t.n,Rotation:plan.rotation||0,InputCoordinates:coord()},
+    Target:{$id:id(),$type:"NINA.Astrometry.InputTarget, NINA.Astrometry",Expanded:true,TargetName:t.id+nameSuffix+" "+t.n,Rotation:plan.rotation||0,InputCoordinates:coord()},
     ExposureInfoListExpanded:false,
     ExposureInfoList:{$id:id(),$type:"NINA.Core.Utility.AsyncObservableCollection`1[[NINA.Sequencer.Utility.ExposureInfo, NINA.Sequencer]], NINA.Core",$values:[]},
     Strategy:{$type:"NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer"},
-    Name:"NightRider - "+t.id+" - "+(S.uiNight||''),
+    Name:"NightRider - "+t.id+nameSuffix+" - "+(S.uiNight||''),
     Conditions:{$id:id(),$type:"NINA.Core.Utility.AsyncObservableCollection`1[[NINA.Sequencer.Conditions.ISequenceCondition, NINA.Sequencer]], NINA.Core",$values:[]},
     IsExpanded:true,
     Items:{$id:id(),$type:"NINA.Core.Utility.AsyncObservableCollection`1[[NINA.Sequencer.SequenceItem.ISequenceItem, NINA.Sequencer]], NINA.Core",$values:[]},
@@ -1151,6 +1312,17 @@ function exportNinaSequence(plan){
     seq.Items.$values.push(cont);
   }
   return seq;
+}
+/* Exports one complete NINA sequence per mosaic panel — safer than trying to nest multiple targets in
+   one container format I haven't verified against a real multi-target NINA file, unlike the single-
+   target structure which is confirmed against the user's actual templates. */
+function exportNinaMosaic(plan, mosaicConfig){
+  const t=getTarget(plan.targetId); const prof=profile();
+  const panels=mosaicPanelCenters(t, prof, mosaicConfig.rows, mosaicConfig.cols, mosaicConfig.overlap, plan.rotation||0);
+  return panels.map(p=>({
+    panel:p,
+    seq:exportNinaSequence(plan, {ra:p.ra, dec:p.dec, nameSuffix:'['+p.label+']'})
+  }));
 }
 function download(name, text, mime){
   const b=new Blob([text],{type:mime||'application/json'});
@@ -1427,21 +1599,39 @@ function telescopiusObjectToTarget(rawItem){
   const found=deepFind(obj, {
     ra:/^ra$|right_ascension|ra_deg|ra_hours/i,
     dec:/^dec$|declination|dec_deg/i,
-    size:/^size$|^subr$|angular_size/i,
     mag:/^mag$|magnitude/i,
   });
   if(found.ra==null||found.dec==null) return null; // can't place it on sky without coordinates — skip rather than guess
   const ra = found.ra>24 ? found.ra/15 : found.ra; // tolerate either hours or degrees
+  // major_axis confirmed in arcSECONDS from a real response (Tulip Nebula: major_axis:1200 = 20' true size) —
+  // divide by 60 for Night Rider's arcmin convention. Generic 'size' fallback below has unconfirmed units.
+  const sizeArcmin = obj.major_axis!=null ? obj.major_axis/60 : (deepFind(obj,{size:/^size$|^subr$|angular_size/i}).size || 30);
   return {
     id: String(id).replace(/\s+/g,''), n: name, ra, dec: found.dec,
     type: (obj.family==='deep_sky_object'?'CU':obj.family)||'CU',
-    size: found.size||30, sb: 22.0, pal:'—', custom:true,
+    size: sizeArcmin, sb: 22.0, pal:'—', custom:true,
     telescopiusIds: obj.ids||[], telescopiusTypes: obj.types||[], telescopiusNames: obj.names||[],
+    telescopiusUrl: obj.url||null,
   };
+}
+/* Opens the real Telescopius page for a target — uses the cached URL from a live import/search if present,
+   otherwise does a quick live name lookup via the proxy. Falls back to the homepage rather than a guessed
+   (and confirmed-broken) search URL. */
+async function openTelescopiusLink(t){
+  if(t.telescopiusUrl){ window.open(t.telescopiusUrl,'_blank'); return; }
+  if(!S.telescopiusProxyUrl){ window.open('https://telescopius.com/','_blank'); toast('Set your Telescopius proxy URL in Settings for direct deep links.', true); return; }
+  toast('Looking up '+t.id+' on Telescopius…');
+  try{
+    const data=await searchTelescopiusTargets({name:t.n||t.id});
+    const items=data.page_results||data.objects||[];
+    const item=items[0];
+    const url=item && (item.object||item).url;
+    if(url){ t.telescopiusUrl=url; save(); window.open(url,'_blank'); }
+    else { window.open('https://telescopius.com/','_blank'); toast('No exact match found — opened Telescopius homepage instead.', true); }
+  }catch(e){ window.open('https://telescopius.com/','_blank'); toast('Lookup failed ('+e.message+') — opened homepage instead.', true); }
 }
 
 /* ============ Telescopius CSV/links (still work standalone, no proxy needed) ============ */
-function telescopiusSearchUrl(t){ return 'https://telescopius.com/search?q='+encodeURIComponent(t.id||t.n); }
 /* CSV import: tolerant of Telescopius list exports (looks for name/ra/dec columns) */
 function importTelescopiusCsv(text){
   const lines=text.split(/\r?\n/).filter(l=>l.trim());
@@ -1476,6 +1666,7 @@ function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(
 function initShell(){
   document.title='Night Rider 3000 — Astro Session Planner (Build '+BUILD_ID+')';
   $('#reload-btn').onclick=()=>location.reload();
+  PREV_VISIT=S.lastVisit; S.lastVisit=Date.now(); save();
   const today=new Date(); if(today.getHours()<10) today.setDate(today.getDate()-1);
   const dstr = S.uiNight || today.toISOString().slice(0,10);
   S.uiNight=dstr;
@@ -1535,8 +1726,8 @@ function autoFillPlan(dateStr){
     const tn=targetNight(t,ev,{moonSep:plan.moonSep});
     const usable=tn.windows.reduce((a,w)=>a+w.minutes,0);
     const minNeeded=p.minSessionMin||30;
-    return usable>=minNeeded ? {t,usable,deficit:projectPaceDeficit(p)*(p.priority||1)} : null;
-  }).filter(Boolean).sort((a,b)=>b.deficit-a.deficit || b.usable-a.usable);
+    return usable>=minNeeded ? {t,usable,score:targetScore(t,tn),deficit:projectPaceDeficit(p)*(p.priority||1)} : null;
+  }).filter(Boolean).sort((a,b)=>b.deficit-a.deficit || b.score-a.score);
   const cap=S.toggles.multiTarget?2:1;
   plan.targets=cands.slice(0,cap).map(c=>c.t.id);
 }
@@ -1571,18 +1762,22 @@ function renderTonight(){
   pg.innerHTML=`
   <h2>Tonight</h2>
   <div class="sub">Night of ${S.uiNight} · ${prof.name}</div>
+  ${S.toggles.visitDigest&&visitDigest()?`<div class="fieldnote" style="margin-bottom:8px">👋 ${esc(visitDigest())}</div>`:''}
   <div class="card tight">
     <div class="row">
       <div class="klist">
         <span>Sunset <b>${fmtHM(ev.sunset)}</b></span><span>Dark <b>${fmtHM(ev.dusk18)}–${fmtHM(ev.dawn18)}</b> (${fmtDur(ev.dusk18&&ev.dawn18?(ev.dawn18-ev.dusk18)/60e3:null)})</span>
         <span>Sunrise <b>${fmtHM(ev.sunrise)}</b></span>
         <span>Moon <b>${(ev.moonIllum*100).toFixed(0)}%</b> ${fmtHM(ev.moonrise)}→${fmtHM(ev.moonset)}</span>
+        ${S.toggles.cooldownReminder&&tp.targets.length?(()=>{ const starts=tp.targets.map(id=>{ const t=getTarget(id); if(!t)return null; const tn=targetNight(t,ev,{moonSep:tp.moonSep}); return tn.windows[0]?tn.windows[0].from:null; }).filter(Boolean); if(!starts.length) return ''; const earliest=new Date(Math.min(...starts)); const cool=new Date(earliest.getTime()-20*60e3); return `<span>❄ Start cooling by <b>${fmtHM(cool)}</b></span>`; })():''}
       </div>
       <div class="spacer" style="flex:1"></div>
       <button class="btn small" id="wx-btn">${wxCached?'Refresh forecast':'Fetch Astrospheric'}</button>
       <span class="dim mono" style="font-size:11px">${creditsToday()}/100 credits today${wxCached?' · cached '+new Date(S.weatherCache.fetchedAt).toLocaleTimeString([],{hour12:false}):''}</span>
     </div>
+    ${wxCached?'<div id="wx-strip" style="margin-top:8px"></div>':''}
   </div>
+  ${S.toggles.sessionChecklist?'<div class="card tight" id="checklist-card"></div>':''}
   <div class="card">
     <h3>Night timeline</h3>
     <div class="row" style="margin-bottom:8px">
@@ -1595,6 +1790,7 @@ function renderTonight(){
         :'<button class="btn small" id="nina-review">Export NINA sequence</button><button class="btn small" id="nina-quick" style="opacity:.75">Quick export</button>'):''}
     </div>
     <div id="tl-wrap"></div>
+    ${S.toggles.altitudeChart?'<div id="tl-alt-wrap" style="margin-top:8px"></div>':''}
     <div id="tl-plans"></div>
   </div>
   ${S.toggles.ninaDashboard&&S.nina.confirmed?`<div class="card"><h3>NINA live status</h3><div id="nina-dash"><button class="btn small" id="nina-dash-btn">Refresh</button> <span class="fieldnote" style="display:inline">Read-only — no equipment control from here, by design.</span></div></div>`:''}
@@ -1611,6 +1807,9 @@ function renderTonight(){
   if($('#bn-btn')) $('#bn-btn').onclick=bestNights;
   if($('#nina-dash-btn')) $('#nina-dash-btn').onclick=refreshNinaDash;
   drawTimeline(ev,tp);
+  if(S.toggles.sessionChecklist) drawChecklist();
+  if(wxCached) drawWeatherStrip(ev);
+  if(S.toggles.altitudeChart) drawAltitudeChart(ev,tp,S.uiNight,'tl-alt-wrap');
   drawPlanCards(ev,tp);
   if(S.toggles.mooncal) drawMoonCal();
 }
@@ -1618,8 +1817,8 @@ function sortedByBest(ev){
   return allTargets().map(t=>{
     const tn=targetNight(t,ev,{moonSep:tonightPlan().moonSep});
     const tot=tn.windows.reduce((a,w)=>a+w.minutes,0);
-    return {...t, _min:tot, best: tot>0? fmtDur(tot):'—'};
-  }).sort((a,b)=>b._min-a._min);
+    return {...t, _min:tot, _score:targetScore(t,tn), best: tot>0? fmtDur(tot):'—'};
+  }).sort((a,b)=>b._score-a._score);
 }
 function drawTimeline(ev,tp,dateStr,containerId){
   dateStr=dateStr||S.uiNight;
@@ -1685,6 +1884,122 @@ function drawTimeline(ev,tp,dateStr,containerId){
     r.addEventListener('mouseleave',()=>tip.style.display='none');
   });
 }
+/* Altitude-vs-time chart — the classic astro-planning visual every real tool (Stellarium, Telescopius,
+   SkySafari) has and Night Rider lacked despite already computing every sample this needs. */
+function drawAltitudeChart(ev,tp,dateStr,containerId){
+  dateStr=dateStr||S.uiNight;
+  const wrap=$('#'+(containerId||'tl-alt-wrap')); if(!wrap) return;
+  if(!tp.targets.length){ wrap.innerHTML=''; return; }
+  if(!ev.sunset||!ev.sunrise){ wrap.innerHTML=''; return; }
+  const t0=new Date(ev.sunset.getTime()-45*60e3), t1=new Date(ev.sunrise.getTime()+45*60e3);
+  const W=1160, PL=42, PR=140, PT=14, PB=26, H=220;
+  const X=d=>PL+(d-t0)/(t1-t0)*(W-PL-PR);
+  const Y=alt=>PT+(90-alt)/90*(H-PT-PB);
+  const palette=['var(--amber)','var(--blu)','var(--grn)','var(--db)','var(--sii)','var(--oiii)','var(--bb)','var(--red)'];
+  let s=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+  // altitude gridlines every 15°
+  for(let a=0;a<=90;a+=15){
+    const y=Y(a);
+    s+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--line)" stroke-width="${a===0?1.5:1}"/>`;
+    s+=`<text x="${PL-6}" y="${y+4}" fill="var(--dim)" font-size="10" text-anchor="end" font-family="var(--mono)">${a}°</text>`;
+  }
+  // altitude floor line, dashed
+  const floorY=Y(S.session.altFloor);
+  s+=`<line x1="${PL}" y1="${floorY}" x2="${W-PR}" y2="${floorY}" stroke="var(--warn)" stroke-width="1" stroke-dasharray="4,3" opacity=".7"/>`;
+  s+=`<text x="${W-PR+6}" y="${floorY+4}" fill="var(--warn)" font-size="10" font-family="var(--mono)">floor</text>`;
+  // astro-dark shading + hour ticks
+  if(ev.dusk18&&ev.dawn18) s+=`<rect x="${X(ev.dusk18)}" y="${PT}" width="${X(ev.dawn18)-X(ev.dusk18)}" height="${H-PT-PB}" fill="rgba(232,184,75,.04)" stroke="var(--amber)" stroke-width="1" opacity=".4"/>`;
+  const tick=new Date(t0); tick.setMinutes(0,0,0); tick.setHours(tick.getHours()+1);
+  for(let t=tick.getTime(); t<t1.getTime(); t+=3600e3){
+    const x=X(new Date(t));
+    s+=`<line x1="${x}" y1="${PT}" x2="${x}" y2="${H-PB}" stroke="var(--line)" stroke-width="1" opacity=".5"/>`;
+    s+=`<text x="${x}" y="${H-8}" fill="var(--dim)" font-size="10" text-anchor="middle" font-family="var(--mono)">${new Date(t).getHours()}:00</text>`;
+  }
+  // moon altitude — dashed white/gray line
+  const moonPts=[]; for(let tt=t0.getTime(); tt<=t1.getTime(); tt+=10*60e3){ const d=new Date(tt); const m=moonPos(d); moonPts.push([X(d),Y(Math.max(0,m.alt))]); }
+  s+=`<path d="M ${moonPts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ')}" fill="none" stroke="#D8DEE9" stroke-width="1.5" stroke-dasharray="5,3" opacity=".55"/>`;
+  s+=`<text x="${W-PR+6}" y="${PT+10}" fill="#D8DEE9" font-size="10" font-family="var(--mono)" opacity=".8">moon</text>`;
+  // one line per target, using its own real computed samples — no new math, just visualizing what already exists
+  tp.targets.forEach((id,i)=>{
+    const t=getTarget(id); if(!t) return;
+    const tn=targetNight(t,ev,{moonSep:tp.moonSep});
+    const col=palette[i%palette.length];
+    const pts=tn.samples.map(smp=>[X(smp.t),Y(Math.max(0,smp.alt))]);
+    if(pts.length) s+=`<path d="M ${pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ')}" fill="none" stroke="${col}" stroke-width="2"/>`;
+    // highlight the usable (above-floor, moon-clear) portion more boldly
+    tn.windows.forEach(w=>{
+      const wpts=tn.samples.filter(smp=>smp.t>=w.from&&smp.t<=w.to).map(smp=>[X(smp.t),Y(Math.max(0,smp.alt))]);
+      if(wpts.length>1) s+=`<path d="M ${wpts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ')}" fill="none" stroke="${col}" stroke-width="4" opacity=".9"/>`;
+      // explicit rise/drop time labels, right at the actual window-boundary point on the curve
+      const fromSmp=tn.samples.find(smp=>smp.t.getTime()===w.from.getTime());
+      const toSmp=tn.samples.find(smp=>smp.t.getTime()===w.to.getTime());
+      if(fromSmp){ const px_=X(w.from), py_=Y(Math.max(0,fromSmp.alt)); s+=`<circle cx="${px_.toFixed(1)}" cy="${py_.toFixed(1)}" r="3" fill="${col}"/><text x="${px_.toFixed(1)}" y="${(py_-8).toFixed(1)}" fill="${col}" font-size="9" text-anchor="middle" font-family="var(--mono)">↑${fmtHM(w.from)}</text>`; }
+      if(toSmp){ const px_=X(w.to), py_=Y(Math.max(0,toSmp.alt)); s+=`<circle cx="${px_.toFixed(1)}" cy="${py_.toFixed(1)}" r="3" fill="${col}"/><text x="${px_.toFixed(1)}" y="${(py_-8).toFixed(1)}" fill="${col}" font-size="9" text-anchor="middle" font-family="var(--mono)">${fmtHM(w.to)}↓</text>`; }
+    });
+    s+=`<text x="${W-PR+6}" y="${PT+26+i*16}" fill="${col}" font-size="11" font-family="var(--mono)">${esc(t.id)}</text>`;
+  });
+  s+='</svg>';
+  wrap.innerHTML=`<h3 style="margin-bottom:6px">Altitude tonight</h3>`+s+`<div class="fieldnote">Bold segments = actually usable (above altitude floor, clear of the moon). ↑ = rises into usable range, ↓ = drops out. Dashed white line = moon.</div>`;
+}
+/* Clear-Sky-Chart-style meteogram — cloud/transparency/seeing/dew as separate rows rather than one
+   blended number. All this data was already being fetched from Astrospheric; it just had nowhere to go. */
+function drawWeatherStrip(ev){
+  const el=$('#wx-strip'); if(!el) return;
+  if(!ev.sunset||!ev.sunrise){ el.innerHTML=''; return; }
+  const t0=new Date(ev.sunset.getTime()-45*60e3), t1=new Date(ev.sunrise.getTime()+45*60e3);
+  const rows=[
+    {key:'cloud', label:'Cloud', unit:'%', good:v=>v<20, bad:v=>v>60},
+    {key:'transparency', label:'Transp.', unit:'', good:v=>v>=4, bad:v=>v<=2},
+    {key:'seeing', label:'Seeing', unit:'', good:v=>v>=4, bad:v=>v<=2},
+  ];
+  const present=rows.filter(r=>seriesAt(r.key,ev.mid)!=null || seriesAt(r.key,t0)!=null);
+  if(!present.length){ el.innerHTML='<div class="fieldnote">Forecast fetched, but no hourly cloud/transparency/seeing series recognized in the response.</div>'; return; }
+  const cellW=18, rowH=16, PL=64;
+  const hours=[]; for(let t=t0.getTime(); t<t1.getTime(); t+=3600e3) hours.push(new Date(t));
+  let h='<div style="overflow-x:auto"><table style="border-collapse:collapse"><tbody>';
+  for(const r of present){
+    h+=`<tr><td class="mono dim" style="font-size:10px;padding-right:6px;white-space:nowrap">${r.label}</td>`;
+    for(const hr of hours){
+      let v=seriesAt(r.key,hr);
+      let col='var(--panel3)', txt='';
+      if(v!=null){
+        if(r.key==='cloud'){ if(v<=1) v*=100; txt=Math.round(v)+'%'; col = v<20?'var(--good)':v<60?'var(--warn)':'var(--bad)'; }
+        else { txt=(+v).toFixed(1); col = r.good(v)?'var(--good)':r.bad(v)?'var(--bad)':'var(--warn)'; }
+      }
+      h+=`<td style="width:${cellW}px;height:${rowH}px;background:${col};border:1px solid var(--bg)" title="${r.label} ${fmtHM(hr)}: ${txt||'no data'}"></td>`;
+    }
+    h+='</tr>';
+  }
+  // dew risk row, computed rather than fetched directly
+  const dewRow=hours.map(hr=>dewRiskAt(hr));
+  if(dewRow.some(d=>d!=null)){
+    h+=`<tr><td class="mono dim" style="font-size:10px;padding-right:6px;white-space:nowrap">Dew risk</td>`;
+    dewRow.forEach((d,i)=>{
+      const col = d==null?'var(--panel3)':d.risk?'var(--bad)':'var(--good)';
+      h+=`<td style="width:${cellW}px;height:${rowH}px;background:${col};border:1px solid var(--bg)" title="${fmtHM(hours[i])}: ${d?d.spread.toFixed(1)+'° spread':'no data'}"></td>`;
+    });
+    h+='</tr>';
+  }
+  h+='</tbody></table></div>';
+  h+=`<div class="fieldnote">Cloud/transparency/seeing from Astrospheric · dew risk computed from temp/dew-point spread (rule of thumb: risk when spread narrows below ~3-5°). Hover a cell for the exact hour.</div>`;
+  el.innerHTML=h;
+}
+/* Pre-session checklist — common hobby practice (one missed step, like a dew heater, can cost a whole
+   night). Persisted per-date so it naturally starts fresh each session; items are user-editable. */
+function drawChecklist(){
+  const el=$('#checklist-card'); if(!el) return;
+  const ds=S.uiNight;
+  if(!S.checklistState[ds]) S.checklistState[ds]={};
+  const state=S.checklistState[ds];
+  el.innerHTML=`<h3>Pre-session checklist</h3>
+    <div id="checklist-items">${S.checklistItems.map((item,i)=>`<label class="tog" style="display:block;margin:4px 0"><input type="checkbox" data-ci="${i}" ${state[i]?'checked':''}><span class="tr"></span>${esc(item)}</label>`).join('')}</div>
+    <div class="row" style="margin-top:8px"><input type="text" id="ci-new" placeholder="Add item…" style="flex:1"><button class="btn small" id="ci-add">Add</button></div>`;
+  el.querySelectorAll('[data-ci]').forEach(cb=>cb.onchange=()=>{ state[+cb.dataset.ci]=cb.checked; save(); });
+  $('#ci-add').onclick=()=>{
+    const v=$('#ci-new').value.trim(); if(!v) return;
+    S.checklistItems.push(v); save(); drawChecklist();
+  };
+}
 function removeFromPlan(dateStr,id){ const tp=planFor(dateStr); tp.targets=tp.targets.filter(x=>x!==id); tp.autoFill=false; save(); }
 async function syncNinaLive(pid){
   const p=S.projects.find(x=>x.id===pid); if(!p) return;
@@ -1741,11 +2056,12 @@ function drawPlanCards(ev,tp,dateStr,containerId){
     h+=`<div class="card tight" style="margin:0">
       <div class="row" style="justify-content:space-between">
       <b style="${S.toggles.targetThumbs?'cursor:pointer':''}" ${S.toggles.targetThumbs?`onclick="framingModal('${esc(t.id)}')"`:''}>${S.toggles.targetThumbs?`<img src="${targetImageUrl(t)}" width="22" height="22" style="border-radius:4px;vertical-align:-5px;margin-right:6px;object-fit:cover" onerror="this.style.display='none'">`:''}${esc(t.id)} — ${esc(t.n)}</b>
-      ${S.toggles.telescopiusLinks?`<a class="dim" style="font-size:11px" href="${telescopiusSearchUrl(t)}" target="_blank">Telescopius ↗</a>`:''}</div>
+      <div class="row" style="gap:8px">${S.toggles.telescopiusLinks?`<a class="dim" style="font-size:11px;cursor:pointer" onclick="openTelescopiusLink(getTarget('${esc(t.id)}'))">Telescopius ↗</a>`:''}<button class="btn small danger" onclick="removeFromPlan('${dateStr}','${esc(t.id)}');${containerId?'renderPlannerDay(\''+dateStr+'\')':'renderTonight()'}">Delete</button></div></div>
       <div class="klist" style="margin:6px 0">
         <span>${TYPE_NAMES[t.type]||t.type} <b>${t.size}′</b></span><span>Palette <b>${esc(t.pal)}</b></span>
         <span>Moon sep <b class="${sep>=tp.moonSep?'good':'warn'}">${sep.toFixed(0)}°</b></span>
         <span>Windows <b>${tn.windows.map(w=>fmtHM(w.from)+'–'+fmtHM(w.to)).join(', ')||'none'}</b></span>
+        ${S.toggles.satelliteRisk&&tn.windows.some(w=>satelliteRiskWindow(w,ev))?'<span class="warn" title="Part of this window falls within ~90min of sunset/sunrise, when satellite trails are most common — mainly a concern for wide-field/broadband subs">🛰 sat. trail risk</span>':''}
         ${tn.transit&&fc.lostMin>0?`<span class="warn" title="Meridian flip ~${fmtHM(tn.transit)}, ${S.session.flipCostMin}min budgeted for flip+resettle">Usable <b>${fmtDur(fc.windows.reduce((a,w)=>a+w.minutes,0))}</b> after flip cost</span>`:''}
         ${S.session.nauticalBroadband?`<span class="dim" title="Broadband filters may start/end during nautical twilight per Settings">Broadband window can extend into nautical twilight</span>`:''}
       </div>
@@ -1827,7 +2143,7 @@ async function bestNights(){
       const t=getTarget(id); if(!t) continue;
       const tn=targetNight(t,ev,{moonSep:tp.moonSep});
       const min=tn.windows.reduce((a,w)=>a+w.minutes,0);
-      const score=min*(1-ev.moonIllum*0.6);
+      const score=targetScore(t,tn);
       if(score>best.score) best={score,id,min};
     }
     rows.push({ds,ev,...best});
@@ -1890,9 +2206,21 @@ function ninaExportDialog(tp){
     if(!blocks.length){ toast('No filters selected.',true); return; }
     const rotation=+$('#nx-rot').value||0;
     S.lastExport[prof.id]={filters:filtersState, rotation}; save();
+    closeModal();
+    const mosaic=proj?.mosaic;
+    if(mosaic && mosaic.rows*mosaic.cols>1){
+      const panels=exportNinaMosaic({targetId:t.id, rotation, blocks}, mosaic);
+      let pushedN=0, failedN=0;
+      for(const {panel,seq} of panels){
+        const name=exportFilename(t.id+'_'+panel.label+' '+t.n, S.uiNight);
+        if(S.toggles.ninaPush && S.nina.url){ const r=await ninaPushOrExport(seq, name); r.pushed?pushedN++:failedN++; }
+        else await writeExportFile(name, JSON.stringify(seq,null,1));
+      }
+      toast(`Mosaic (${mosaic.rows}×${mosaic.cols}): `+(S.toggles.ninaPush&&S.nina.url?`${pushedN} pushed live, ${failedN} exported as files.`:`${panels.length} sequence files exported.`));
+      return;
+    }
     const seq=exportNinaSequence({targetId:t.id, rotation, blocks});
     const name=exportFilename(t.id+' '+t.n, S.uiNight);
-    closeModal();
     if(S.toggles.ninaPush && S.nina.url){
       const r=await ninaPushOrExport(seq, name);
       toast(r.pushed?'Pushed live into NINA\u2019s sequencer.':'Live push failed ('+r.fallbackReason+') — exported a file instead.', !r.pushed);
@@ -1921,6 +2249,23 @@ async function quickExportNina(tp){
   });
   if(!blocks.length){ toast('No filters would be included — try Review export instead.',true); return; }
   const rotation=proj?.rotation ?? (last?.rotation||0);
+  const mosaic=proj?.mosaic;
+  const isMosaic = mosaic && mosaic.rows*mosaic.cols>1;
+  if(isMosaic){
+    const panels=exportNinaMosaic({targetId:t.id, rotation, blocks}, mosaic);
+    let pushedN=0, failedN=0;
+    for(const {panel,seq} of panels){
+      const name=exportFilename(t.id+'_'+panel.label+' '+t.n, S.uiNight);
+      if(S.toggles.ninaPush && S.nina.url){
+        const r=await ninaPushOrExport(seq, name);
+        r.pushed?pushedN++:failedN++;
+      } else {
+        await writeExportFile(name, JSON.stringify(seq,null,1));
+      }
+    }
+    toast(`Mosaic (${mosaic.rows}×${mosaic.cols}): `+(S.toggles.ninaPush&&S.nina.url?`${pushedN} pushed live, ${failedN} exported as files.`:`${panels.length} sequence files exported.`));
+    return;
+  }
   const seq=exportNinaSequence({targetId:t.id, rotation, blocks});
   const name=exportFilename(t.id+' '+t.n, S.uiNight);
   if(S.toggles.ninaPush && S.nina.url){
@@ -1977,11 +2322,14 @@ function renderPlannerDay(ds){
   </div>
   <div class="klist" style="margin:6px 0"><span>Dark <b>${fmtHM(ev.dusk18)}–${fmtHM(ev.dawn18)}</b></span><span>Moon <b>${moonEmoji(ev.moonPhaseAngle)} ${(ev.moonIllum*100).toFixed(0)}%</b></span>${!S.weatherCache||!S.weatherCache.data?'<span class="faint">Weather shown only within Astrospheric\u2019s fetched range</span>':''}</div>
   <div class="row" style="margin-bottom:8px"><select id="pd-add" style="width:280px"><option value="">Add target…</option>${sortedByBest(ev).map(t=>`<option value="${t.id}">${t.id} — ${esc(t.n)} (${t.best})</option>`).join('')}</select></div>
-  <div id="pl-tl-wrap"></div><div id="pl-tl-plans"></div>`;
+  <div id="pl-tl-wrap"></div>
+  ${S.toggles.altitudeChart?'<div id="pl-tl-alt-wrap" style="margin-top:8px"></div>':''}
+  <div id="pl-tl-plans"></div>`;
   $('#pd-auto').onchange=e=>{ plan.autoFill=e.target.checked; if(plan.autoFill){ plan.targets=[]; autoFillPlan(ds); } save(); renderPlannerDay(ds); drawPlannerCal(); };
   $('#pd-add').onchange=e=>{ if(e.target.value){ addToPlan(ds,e.target.value); renderPlannerDay(ds); drawPlannerCal(); } };
   $('#pd-open').onclick=()=>{ S.uiNight=ds; $('#nightdate').value=ds; save(); $$('.navbtn').forEach(x=>x.classList.remove('active')); $('.navbtn[data-page="tonight"]').classList.add('active'); $$('.page').forEach(p=>p.classList.remove('active')); $('#page-tonight').classList.add('active'); renderAll(); };
   drawTimeline(ev,plan,ds,'pl-tl-wrap');
+  if(S.toggles.altitudeChart) drawAltitudeChart(ev,plan,ds,'pl-tl-alt-wrap');
   drawPlanCards(ev,plan,ds,'pl-tl-plans');
 }
 function drawForecast(){
@@ -2008,22 +2356,25 @@ function renderTargets(){
     <button class="btn small" id="tg-csv">Import Telescopius CSV</button>
     <input type="file" id="tg-csvfile" accept=".csv" style="display:none">
     ${S.toggles.telescopiusApi&&S.telescopiusProxyUrl?'<button class="btn small" id="tg-tel-live">Telescopius: lists & search</button>':''}
+    <button class="btn small" id="tg-seasonal">Seasonal overview</button>
   </div></div>
   <div class="card"><table id="tg-table"><thead><tr>${S.toggles.targetThumbs?'<th></th>':''}<th>ID</th><th>Name</th><th>Type</th><th>Size</th><th>RA / Dec</th><th>Palette</th><th>Tonight</th><th>Peak alt</th><th></th></tr></thead><tbody></tbody></table></div>`;
   const draw=()=>{
     const q=($('#tg-q').value||'').toLowerCase(); const ty=$('#tg-type').value;
     const rows=allTargets().filter(t=>(!q||t.id.toLowerCase().includes(q)||t.n.toLowerCase().includes(q))&&(!ty||t.type===ty))
       .map(t=>{ const tn=targetNight(t,ev); const min=tn.windows.reduce((a,w)=>a+w.minutes,0);
-        const peak=tn.samples.length?Math.max(...tn.samples.map(s=>s.alt)):0; return {t,min,peak}; })
+        const peak=tn.samples.length?Math.max(...tn.samples.map(s=>s.alt)):0;
+        const clear=targetEverClearsHorizon(t);
+        return {t,min,peak,clear}; })
       .sort((a,b)=>b.min-a.min);
-    $('#tg-table tbody').innerHTML=rows.map(({t,min,peak})=>`<tr>
+    $('#tg-table tbody').innerHTML=rows.map(({t,min,peak,clear})=>`<tr${clear.clears?'':' style="opacity:.45"'}>
       ${S.toggles.targetThumbs?`<td style="cursor:pointer" onclick="framingModal('${esc(t.id)}')"><img loading="lazy" src="${targetImageUrl(t)}" width="34" height="34" style="border-radius:4px;object-fit:cover;vertical-align:middle" onerror="this.style.display='none'"></td>`:''}
-      <td><b style="${S.toggles.targetThumbs?'cursor:pointer':''}" ${S.toggles.targetThumbs?`onclick="framingModal('${esc(t.id)}')"`:''}>${esc(t.id)}</b></td><td class="sans">${esc(t.n)}${t.custom?' <span class="badge nt">custom</span>':''}</td>
+      <td><b style="${S.toggles.targetThumbs?'cursor:pointer':''}" ${S.toggles.targetThumbs?`onclick="framingModal('${esc(t.id)}')"`:''}>${esc(t.id)}</b>${clear.clears?'':` <span class="badge bad" title="Best possible altitude here is only ${clear.bestAlt.toFixed(0)}°, limited by your ${clear.limitedBy} — this target structurally can't be usefully imaged from your location, not just tonight">never clears</span>`}</td><td class="sans">${esc(t.n)}${t.custom?' <span class="badge nt">custom</span>':''}</td>
       <td class="sans dim">${TYPE_NAMES[t.type]||t.type}</td><td>${t.size}′</td>
       <td class="dim">${fmtRA(t.ra)} ${fmtDec(t.dec)}</td><td class="dim">${esc(t.pal)}</td>
       <td class="${min>120?'good':min>0?'warn':'faint'}">${min?fmtDur(min):'—'}</td><td>${peak?peak.toFixed(0)+'°':'—'}</td>
       <td class="right"><button class="btn small" onclick="addTonight('${esc(t.id)}');toast('${esc(t.id)} added to tonight')">tonight</button>
-      ${S.toggles.telescopiusLinks?`<a class="btn small" href="${telescopiusSearchUrl(t)}" target="_blank" style="text-decoration:none">↗</a>`:''}
+      ${S.toggles.telescopiusLinks?`<button class="btn small" onclick="openTelescopiusLink(getTarget('${esc(t.id)}'))" style="text-decoration:none">↗</button>`:''}
       ${t.custom?`<button class="btn small danger" onclick="delCustom('${esc(t.id)}')">✕</button>`:''}</td></tr>`).join('');
   };
   $('#tg-q').oninput=draw; $('#tg-type').onchange=draw;
@@ -2035,9 +2386,55 @@ function renderTargets(){
     catch(err){ toast('CSV import failed: '+err.message, true); }
   };
   if($('#tg-tel-live')) $('#tg-tel-live').onclick=()=>telescopiusLiveModal(draw);
+  $('#tg-seasonal').onclick=()=>seasonalOverviewModal();
   draw();
 }
 function delCustom(id){ S.customTargets=S.customTargets.filter(t=>t.id!==id); save(); renderTargets(); }
+async function seasonalOverviewModal(){
+  modal('<h3>Seasonal overview</h3><div class="sub">Every target, one row, 12 months — scanning at full precision…</div><div style="text-align:center;padding:30px"><span class="spin"></span></div>');
+  await new Promise(r=>setTimeout(r,20));
+  const rows=scanSeasonalGrid();
+  const MON=['J','F','M','A','M','J','J','A','S','O','N','D'];
+  const maxMin=Math.max(...rows.map(r=>Math.max(...r.months)),1);
+  let h=`<h3>Seasonal overview</h3><div class="sub">Average usable minutes per night, sampled mid-month — darker/brighter amber = more usable time.</div>
+  <div style="max-height:60vh;overflow-y:auto"><table style="font-size:11px"><thead><tr><th style="text-align:left">Target</th>${MON.map(m=>`<th style="width:26px;text-align:center">${m}</th>`).join('')}<th>Total</th></tr></thead><tbody>`;
+  rows.forEach(r=>{
+    h+=`<tr><td class="sans" style="cursor:pointer" onclick="closeModal();framingModal('${esc(r.t.id)}')">${esc(r.t.id)}</td>`;
+    r.months.forEach(min=>{
+      const frac=Math.min(1,min/maxMin);
+      const bg = frac<=0 ? 'transparent' : `rgba(232,184,75,${(0.12+frac*0.75).toFixed(2)})`;
+      h+=`<td style="background:${bg};text-align:center" title="${fmtDur(min)}">${min>0?Math.round(min):''}</td>`;
+    });
+    h+=`<td class="dim mono" style="text-align:right">${fmtDur(r.total/12)}/mo</td></tr>`;
+  });
+  h+='</tbody></table></div><div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn" onclick="closeModal()">Close</button></div>';
+  modal(h);
+}
+/* HFR-over-time chart per project — aggregate across filters per session date, so a bad-seeing
+   night or a focus-drift problem is visible at a glance instead of buried in a table. */
+function drawHfrChart(p, imgSum){
+  const el=$('#hfr-chart-'+p.id); if(!el) return;
+  const dates=Object.entries(imgSum.byDate).map(([d,x])=>[d,avg(x.hfrs)]).filter(([d,v])=>v!=null).sort((a,b)=>a[0]<b[0]?-1:1);
+  if(dates.length<2){ el.innerHTML='<div class="fieldnote faint">Need at least 2 sessions with HFR data to chart a trend.</div>'; return; }
+  const W=1000,H=140,PL=42,PR=16,PT=14,PB=26;
+  const vals=dates.map(d=>d[1]); const lo=Math.min(...vals)*0.9, hi=Math.max(...vals)*1.1;
+  const X=i=>PL+i/(dates.length-1)*(W-PL-PR);
+  const Y=v=>PT+(hi-v)/(hi-lo)*(H-PT-PB);
+  const overallAvg=avg(vals);
+  let s=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+  for(let i=0;i<=3;i++){ const v=lo+(hi-lo)*i/3, y=Y(v);
+    s+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--line)"/><text x="${PL-6}" y="${y+4}" fill="var(--dim)" font-size="10" text-anchor="end" font-family="var(--mono)">${v.toFixed(2)}</text>`; }
+  s+=`<line x1="${PL}" y1="${Y(overallAvg)}" x2="${W-PR}" y2="${Y(overallAvg)}" stroke="var(--amber)" stroke-width="1" stroke-dasharray="4,3" opacity=".6"/>`;
+  const pts=dates.map((d,i)=>[X(i),Y(d[1])]);
+  s+=`<path d="M ${pts.map(pt=>pt[0].toFixed(1)+' '+pt[1].toFixed(1)).join(' L ')}" fill="none" stroke="var(--blu)" stroke-width="2"/>`;
+  dates.forEach((d,i)=>{
+    const [x,y]=pts[i]; const bad=d[1]>overallAvg*1.15;
+    s+=`<circle cx="${x}" cy="${y}" r="3.5" fill="${bad?'var(--bad)':'var(--blu)'}"><title>${d[0]}: HFR ${d[1].toFixed(2)}</title></circle>`;
+    if(i===0||i===dates.length-1||dates.length<=6) s+=`<text x="${x}" y="${H-8}" fill="var(--dim)" font-size="9" text-anchor="middle" font-family="var(--mono)">${d[0].slice(5)}</text>`;
+  });
+  s+='</svg>';
+  el.innerHTML=s+`<div class="fieldnote">HFR per session (aggregated across filters) · dashed line = average · red dots = notably above average (worse seeing/focus that night)</div>`;
+}
 async function telescopiusLiveModal(onImported){
   let h=`<h3>Telescopius — live lists & search</h3>
   <div class="row" style="margin-bottom:10px"><button class="btn small" id="tel-tab-lists">My lists</button><button class="btn small" id="tel-tab-search">Search</button></div>
@@ -2077,7 +2474,7 @@ async function telescopiusLiveModal(onImported){
       const res=$('#tel-search-results'); res.innerHTML='<span class="spin"></span> searching…';
       try{
         const data=await searchTelescopiusTargets({name, types:'DEEP_SKY_OBJECT'});
-        const items=(data.objects||[]).slice(0,15);
+        const items=(data.page_results||data.objects||[]).slice(0,15);
         if(!items.length){ res.innerHTML='<span class="dim">No matches.</span>'; return; }
         res.innerHTML=items.map((item,i)=>{
           const t=telescopiusObjectToTarget(item);
@@ -2113,15 +2510,58 @@ function framingModal(id){
     <svg id="fr-svg" width="${px}" height="${px}" viewBox="0 0 ${px} ${px}" style="position:absolute;top:0;left:0;pointer-events:none"></svg>
   </div>
   <div class="row" style="margin-top:10px;justify-content:center"><label class="f" style="margin:0">Rotation</label><input type="number" id="fr-rot" class="short" value="${proj?.rotation??0}"><span class="dim" style="font-size:11px">° (camera position angle, matches NINA framing)</span></div>
-  <div class="fieldnote" style="text-align:center">Box shows ${fov.w.toFixed(2)}° × ${fov.h.toFixed(2)}° at ${prof.name}. Image field ≈ ${imgFov.toFixed(2)}° for context.</div>
+  <div class="row" style="margin-top:6px;justify-content:center;gap:10px">
+    <label class="f" style="margin:0">Mosaic</label>
+    <input type="number" id="fr-mrows" class="short" value="${proj?.mosaic?.rows??1}" min="1" title="Rows"><span class="dim">×</span><input type="number" id="fr-mcols" class="short" value="${proj?.mosaic?.cols??1}" min="1" title="Columns">
+    <label class="f" style="margin:0">Overlap</label><input type="number" id="fr-moverlap" class="short" value="${proj?.mosaic?.overlap??10}" min="0" max="50"><span class="dim">%</span>
+  </div>
+  <div class="fieldnote" style="text-align:center">Box shows ${fov.w.toFixed(2)}° × ${fov.h.toFixed(2)}° at ${prof.name}. Image field ≈ ${imgFov.toFixed(2)}° for context. Mosaic panel centers use standard tangent-plane offsets (RA compressed by 1/cos(dec)).</div>
+  <label class="f">Your notes (personal — never auto-filled)</label>
+  <textarea id="fr-notes" rows="2" placeholder="e.g. watch out for the bright star in the SW corner; benefits from extra SII integration…">${esc(S.targetNotes[id]||'')}</textarea>
+  <hr class="sep">
+  <div class="row" style="justify-content:space-between"><h3 style="margin:0">Best nights this year</h3><button class="btn small" id="fr-year-btn">Scan full year</button></div>
+  <div id="fr-year-out" class="fieldnote">Scans all 365 nights at full precision (~1-2s) — window length, moon, everything computed the same way as Tonight.</div>
   <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn" onclick="closeModal()">Close</button><button class="btn primary" onclick="addTonight('${esc(t.id)}');closeModal();toast('${esc(t.id)} added to tonight')">Add to tonight</button></div>`);
+  $('#fr-year-btn').onclick=async()=>{
+    const out=$('#fr-year-out');
+    out.innerHTML='<span class="spin"></span> scanning 365 nights…';
+    await new Promise(r=>setTimeout(r,20)); // let the spinner paint before the sync scan blocks the thread
+    const result=scanFullYear(t, S.session.moonSepDefault);
+    if(!result.topNights.length){
+      out.innerHTML='<span class="warn">No usable nights found this year at your current location/altitude floor/moon settings — this target may simply not clear your horizon here.</span>';
+      return;
+    }
+    const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    out.innerHTML=`<table style="margin-top:4px"><thead><tr><th>Date</th><th>Usable</th><th>Moon</th></tr></thead><tbody>
+      ${result.topNights.slice(0,6).map(n=>`<tr><td>${n.ds}</td><td>${fmtDur(n.usable)}</td><td>${(n.moonIllum*100).toFixed(0)}%</td></tr>`).join('')}
+      </tbody></table>
+      <div class="fieldnote" style="margin-top:6px">By month (avg usable/night): ${result.monthly.map(m=>MON[m.month]+' '+fmtDur(m.avgMin)).join(' · ')}</div>
+      <button class="btn small" id="fr-ics-btn" style="margin-top:6px">Download calendar (.ics)</button>`;
+    $('#fr-ics-btn').onclick=()=>{
+      download(t.id+'_best_nights.ics', buildIcs(t, result.topNights), 'text/calendar');
+      toast('Calendar downloaded — import into any calendar app.');
+    };
+  };
   const draw=()=>{
     const rot=+$('#fr-rot').value||0;
+    const rows=Math.max(1,+$('#fr-mrows').value||1), cols=Math.max(1,+$('#fr-mcols').value||1);
+    const overlap=Math.max(0,+$('#fr-moverlap').value||0);
     const wpx=px*(fov.w/imgFov), hpx=px*(fov.h/imgFov);
+    const stepWpx=wpx*(1-overlap/100), stepHpx=hpx*(1-overlap/100);
     const cx=px/2, cy=px/2;
-    $('#fr-svg').innerHTML=`<g transform="rotate(${(-rot).toFixed(1)} ${cx} ${cy})"><rect x="${cx-wpx/2}" y="${cy-hpx/2}" width="${wpx}" height="${hpx}" fill="rgba(232,184,75,.10)" stroke="var(--amber)" stroke-width="2"/></g>`;
+    let rects='';
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      const ox=(c-(cols-1)/2)*stepWpx, oy=(r-(rows-1)/2)*stepHpx;
+      rects+=`<rect x="${(cx+ox-wpx/2).toFixed(1)}" y="${(cy+oy-hpx/2).toFixed(1)}" width="${wpx.toFixed(1)}" height="${hpx.toFixed(1)}" fill="rgba(232,184,75,.10)" stroke="var(--amber)" stroke-width="2"/>`;
+    }
+    $('#fr-svg').innerHTML=`<g transform="rotate(${(-rot).toFixed(1)} ${cx} ${cy})">${rects}</g>`;
   };
-  $('#fr-rot').oninput=draw; draw();
+  $('#fr-rot').oninput=draw; $('#fr-mrows').oninput=draw; $('#fr-mcols').oninput=draw; $('#fr-moverlap').oninput=draw; draw();
+  $('#fr-notes').oninput=()=>{ S.targetNotes[id]=$('#fr-notes').value; save(); };
+  if(proj){
+    const saveMosaic=()=>{ proj.mosaic={rows:Math.max(1,+$('#fr-mrows').value||1), cols:Math.max(1,+$('#fr-mcols').value||1), overlap:Math.max(0,+$('#fr-moverlap').value||0)}; save(); };
+    $('#fr-mrows').addEventListener('change',saveMosaic); $('#fr-mcols').addEventListener('change',saveMosaic); $('#fr-moverlap').addEventListener('change',saveMosaic);
+  }
 }
 function customTargetDialog(){
   modal(`<h3>Custom target</h3>
@@ -2201,6 +2641,7 @@ function renderProjects(){
         <span class="mono dim" style="width:110px;text-align:right">${r.done}/${r.goal} (${r.pct}%)</span></div>`).join('')}</div>
       <div class="fieldnote">${totalDone.toFixed(1)}h of ${totalGoal.toFixed(1)}h integration · ${p.logs.length} logged sessions${p.notes?' · '+esc(p.notes):''}</div>
       ${imgSum?`<details class="adv" style="margin-top:8px"><summary>Image quality — ${imgSum.count} captured, avg HFR ${avg(imgSum.hfrs)?.toFixed(2)??'—'}</summary>
+        ${S.toggles.hfrChart?`<div id="hfr-chart-${p.id}" style="margin:8px 0"></div>`:''}
         <table style="margin-top:6px"><thead><tr><th>Filter</th><th>Subs</th><th>Time</th><th>Avg HFR</th><th>Best</th><th>Worst</th></tr></thead><tbody>
         ${Object.entries(imgSum.byFilter).map(([fn,d])=>`<tr><td class="sans">${esc(fn)}</td><td>${d.count}</td><td>${fmtDur(d.sec/60)}</td><td>${avg(d.hfrs)?.toFixed(2)??'—'}</td><td class="good">${d.hfrs.length?Math.min(...d.hfrs).toFixed(2):'—'}</td><td class="warn">${d.hfrs.length?Math.max(...d.hfrs).toFixed(2):'—'}</td></tr>`).join('')}
         </tbody></table>
@@ -2208,6 +2649,20 @@ function renderProjects(){
       </details>`:(S.toggles.imageQuality?'<div class="fieldnote faint" style="margin-top:6px">No image-quality data yet — scan the images folder above.</div>':'')}
     </div>`;
   }).join('');
+  if(S.toggles.hfrChart) S.projects.forEach(p=>{
+    const t=getTarget(p.targetId);
+    const imgSum=S._imageScan && t ? (S._imageScan[t.n]||S._imageScan[t.id]) : null;
+    if(imgSum) drawHfrChart(p, imgSum);
+  });
+}
+/* Rough community rule-of-thumb for total integration time by target brightness, scaled for local sky
+   darkness — informational only, shown as a hint next to the goals table, never auto-filled, since
+   allocating a total across specific filters would be a guess this app shouldn't make silently. */
+function suggestedProjectHours(t){
+  let base;
+  if(t.sb<=19.5) base=3; else if(t.sb<=21) base=6; else if(t.sb<=22.5) base=10; else base=16;
+  const bortleScale=1+Math.max(0,(S.location.bortle-4))*0.12;
+  return base*bortleScale;
 }
 function projectDialog(pid){
   const p=pid?S.projects.find(x=>x.id===pid):null;
@@ -2221,6 +2676,7 @@ function projectDialog(pid){
   <div><label class="f">Min. session length (min)</label><input type="number" id="pj-minses" class="short" value="${p?.minSessionMin??30}" title="Auto-fill/B-side won't suggest this project for a window shorter than this"></div></div>
   <label class="f">Per-filter goals (count × exposure s; leave count 0 to skip)</label>
   <table><thead><tr><th>Filter</th><th>Subs</th><th>Exp (s)</th></tr></thead><tbody id="pj-goals"></tbody></table>
+  <div id="pj-hours-hint" class="fieldnote"></div>
   <label class="f">Notes</label><input type="text" id="pj-notes" value="${esc(p?.notes||'')}">
   <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" id="pj-go">${p?'Save':'Create'}</button></div>`;
   modal(h);
@@ -2232,8 +2688,10 @@ function projectDialog(pid){
       <td><input type="number" id="pjg-c-${f.id}" class="short" value="${g?.count??0}"></td>
       <td><input type="number" id="pjg-e-${f.id}" class="short" value="${g?.exp??(f.defaultExp??300)}"></td></tr>`;
     }).join('');
+    const t=getTarget($('#pj-target').value);
+    if(t) $('#pj-hours-hint').textContent='Rough community rule of thumb for a target this faint from your sky (Bortle '+S.location.bortle+'): ~'+suggestedProjectHours(t).toFixed(1)+'h total. Not auto-filled — split it across filters however fits your plan.';
   };
-  $('#pj-prof').onchange=fillGoals; fillGoals();
+  $('#pj-prof').onchange=fillGoals; $('#pj-target').onchange=fillGoals; fillGoals();
   $('#pj-go').onclick=()=>{
     const pr=S.profiles.find(x=>x.id===$('#pj-prof').value);
     const goals={};
@@ -2594,7 +3052,7 @@ function renderEquipment(){
 /* ============ SETTINGS page ============ */
 function renderSettings(){
   const pg=$('#page-settings'); const L=S.location; const ses=S.session;
-  const togNames={ninaExport:'NINA sequence export',ninaImport:'NINA autosave import',bside:'B-side suggestions',mooncal:'Moon calendar',flipMarkers:'Meridian flip markers',backup:'Backup/restore',snrPanel:'SNR panel',bestNights:'Best-nights finder',gapWarnings:'Dark-library gap warnings',multiTarget:'Multi-target nights',nightSheet:'Night sheet export',telescopiusLinks:'Telescopius links',telescopiusApi:'Telescopius live lists & search (via proxy)',targetThumbs:'Target thumbnails & framing preview',planner:'Planner tab (future nights)',imageQuality:'Image-quality summary (HFR from filenames)',aiReviewOnImport:'Auto AI-review on NINA import',autoBackupOnLoad:'Auto-backup to folder on load',ninaDashboard:'NINA live status dashboard',ninaLiveSync:'NINA live sub-count sync (experimental)',ninaPush:'Push sequences live to NINA (falls back to file)'};
+  const togNames={ninaExport:'NINA sequence export',ninaImport:'NINA autosave import',bside:'B-side suggestions',mooncal:'Moon calendar',flipMarkers:'Meridian flip markers',backup:'Backup/restore',snrPanel:'SNR panel',bestNights:'Best-nights finder',gapWarnings:'Dark-library gap warnings',multiTarget:'Multi-target nights',nightSheet:'Night sheet export',telescopiusLinks:'Telescopius links',telescopiusApi:'Telescopius live lists & search (via proxy)',targetThumbs:'Target thumbnails & framing preview',planner:'Planner tab (future nights)',imageQuality:'Image-quality summary (HFR from filenames)',aiReviewOnImport:'Auto AI-review on NINA import',autoBackupOnLoad:'Auto-backup to folder on load',ninaDashboard:'NINA live status dashboard',ninaLiveSync:'NINA live sub-count sync (experimental)',ninaPush:'Push sequences live to NINA (falls back to file)',altitudeChart:'Altitude-vs-time chart (Tonight/Planner)',hfrChart:'HFR trend chart (Projects, needs image scan)',satelliteRisk:'Satellite-trail twilight risk note',cooldownReminder:'Camera cooldown start reminder',sessionChecklist:'Pre-session checklist',visitDigest:'"Since you last visited" digest'};
   pg.innerHTML=`<h2>Settings</h2>
   <div class="grid2">
   <div class="card"><h3>Location & sky</h3>
