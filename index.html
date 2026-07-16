@@ -168,13 +168,14 @@ details.adv summary{cursor:pointer;color:var(--dim);font-size:12px}
 <body>
 <div id="nightwrap">
 <div id="topbar">
-  <h1>Night <span>Rider 3000</span></h1>
+  <h1>Night <span class="kitt-scanner-blue" title="Night Rider 3000"><span class="kitt-dot-blue"></span></span> <span>Rider 3000</span></h1>
   <div id="kitt-scanner"><div id="kitt-dot"></div></div>
   <div id="nightpick"><span class="tbarstat">Night of</span><input type="date" id="nightdate"></div>
   <div class="tbarstat" id="tb-dark"></div>
   <div class="tbarstat" id="tb-moon"></div>
   <div class="spacer"></div>
   <select id="profilesel" title="Active equipment profile"></select>
+  <button class="btn small" id="reload-btn" title="Reload the app">⟳ Reload</button>
   <label class="tog" title="Red screen mode to preserve night vision"><input type="checkbox" id="redmode"><span class="tr"></span>Red</label>
 </div>
 <div id="main">
@@ -621,7 +622,9 @@ const DEFAULT_STATE = {
   folders:{}, // kind -> {name, connected}
   exportMode:'review', // 'review' | 'quick'
   lastExport:{}, // profileId -> {filters:{id:{on,exp,count}}, rotation}
-  keys:{anthropic:'', astrospheric:'', telescopius:''},
+  keys:{anthropic:'', astrospheric:''},
+  telescopiusProxyUrl:'',
+  telescopiusEnrichment:{}, // id -> {telescopiusIds, telescopiusTypes, telescopiusNames} — for targets that already exist in the built-in catalog
   nina:{url:'http://localhost:1888', confirmed:false},
   ai:{model:'claude-haiku-4-5-20251001', citeNorms:true, autoModel:true},
   toggles:{ninaExport:true, ninaImport:true, bside:true, mooncal:true, flipMarkers:true, backup:true, snrPanel:true, bestNights:true, gapWarnings:true, multiTarget:true, nightSheet:true, telescopiusLinks:true, telescopiusApi:false, targetThumbs:true, planner:true, imageQuality:true, aiReviewOnImport:false, autoBackupOnLoad:false, ninaDashboard:true, ninaLiveSync:false, ninaPush:true},
@@ -950,6 +953,17 @@ async function askClaude(system, user, maxTokens, modelOverride){
   return (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
 }
 /* Ground-truth context block fed to every AI call */
+/* Surfaces Telescopius' richer metadata (real type tags, cross-catalog aliases) when a target
+   was imported live rather than from the fixed curated catalog — flattening this away would waste
+   exactly the extra detail live import was worth building for. */
+function telescopiusMetaLine(t){
+  const extra = t.telescopiusTypes ? t : (S.telescopiusEnrichment && S.telescopiusEnrichment[t.id]);
+  if(!extra || (!extra.telescopiusTypes && !extra.telescopiusIds)) return '';
+  const bits=[];
+  if(extra.telescopiusTypes&&extra.telescopiusTypes.length) bits.push('Telescopius types: '+extra.telescopiusTypes.slice(0,6).join(', '));
+  if(extra.telescopiusIds&&extra.telescopiusIds.length>1) bits.push('also cataloged as: '+extra.telescopiusIds.filter(x=>x!==t.id).slice(0,4).join(', '));
+  return bits.length ? ' ('+bits.join('; ')+')' : '';
+}
 function groundContext(dateStr, targetIds, constraints){
   const ev=nightEvents(dateStr); const prof=profile(); const fov=fovDeg(prof);
   const L=[];
@@ -974,7 +988,7 @@ function groundContext(dateStr, targetIds, constraints){
       const tn=targetNight(t,ev,constraints||{});
       const w=tn.windows.map(w=>`${fmtHM(w.from)}–${fmtHM(w.to)} (${fmtDur(w.minutes)}, peak ${w.peakAlt.toFixed(0)}°)`).join('; ')||'no usable window';
       const m=moonPos(ev.mid);
-      L.push(`  ${t.id} ${t.n} [${TYPE_NAMES[t.type]||t.type}, ${t.size}' , palette ${t.pal}]: ${w}. Transit ${tn.transit?fmtHM(tn.transit)+' (meridian flip)':'outside dark hours'}. Moon sep ~${angSep(t.ra,t.dec,m.ra,m.dec).toFixed(0)}°.`);
+      L.push(`  ${t.id} ${t.n} [${TYPE_NAMES[t.type]||t.type}, ${t.size}' , palette ${t.pal}]: ${w}. Transit ${tn.transit?fmtHM(tn.transit)+' (meridian flip)':'outside dark hours'}. Moon sep ~${angSep(t.ra,t.dec,m.ra,m.dec).toFixed(0)}°.${telescopiusMetaLine(t)}`);
       const proj=S.projects.find(p=>p.targetId===id);
       if(proj){
         const st=projectStatus(proj);
@@ -993,7 +1007,7 @@ function groundContext(dateStr, targetIds, constraints){
     const m=moonPos(ev.mid);
     for(const {t,tn} of ranked){
       const w=tn.windows.map(w=>`${fmtHM(w.from)}–${fmtHM(w.to)} (${fmtDur(w.minutes)}, peak ${w.peakAlt.toFixed(0)}°)`).join('; ')||'no usable window';
-      L.push(`  ${t.id} ${t.n} [${TYPE_NAMES[t.type]||t.type}, ${t.size}', palette ${t.pal}]: ${w}. Transit ${tn.transit?fmtHM(tn.transit)+' (meridian flip)':'outside dark hours'}. Moon sep ~${angSep(t.ra,t.dec,m.ra,m.dec).toFixed(0)}°.`);
+      L.push(`  ${t.id} ${t.n} [${TYPE_NAMES[t.type]||t.type}, ${t.size}', palette ${t.pal}]: ${w}. Transit ${tn.transit?fmtHM(tn.transit)+' (meridian flip)':'outside dark hours'}. Moon sep ~${angSep(t.ra,t.dec,m.ra,m.dec).toFixed(0)}°.${telescopiusMetaLine(t)}`);
       const proj=S.projects.find(p=>p.targetId===t.id);
       if(proj){
         const st=projectStatus(proj);
@@ -1373,17 +1387,60 @@ async function fetchNinaImageHistory(){
   });
 }
 
-/* ============ Telescopius ============ */
-/* Auth format confirmed by live testing: "Authorization: Key <key>" — NOT Bearer, and notably the
-   official docs tool at api.telescopius.com generates the wrong header format itself. Base is
-   versioned (v2.2), not the bare root. */
+/* ============ Telescopius (via Cloudflare Worker proxy — see telescopius-proxy-worker.js) ============
+   The key lives only in the Worker's encrypted secret now; the browser never sends it. */
 async function telescopiusGet(path){
-  if(!S.keys.telescopius) throw new Error('Add your Telescopius API key in Settings.');
-  const res=await fetchWithTimeout('https://api.telescopius.com/v2.2'+path, {headers:{'Authorization':'Key '+S.keys.telescopius,'Accept':'application/json'}}, 6000);
+  if(!S.telescopiusProxyUrl) throw new Error('Add your Telescopius proxy URL in Settings.');
+  const base=S.telescopiusProxyUrl.trim().replace(/\/+$/,'');
+  const res=await fetchWithTimeout(base+path, {}, 8000);
   const txt=await res.text();
   if(!res.ok) throw new Error('HTTP '+res.status+': '+txt.slice(0,200));
   try{ return JSON.parse(txt); }catch(e){ return txt; }
 }
+async function fetchTelescopiusLists(){
+  const data=await telescopiusGet('/targets/lists');
+  return Array.isArray(data)?data:[];
+}
+async function fetchTelescopiusList(id){
+  const L=S.location;
+  const q=new URLSearchParams({lat:L.lat, lon:L.lon, timezone:'UTC'});
+  const data=await telescopiusGet('/targets/lists/'+encodeURIComponent(id)+'?'+q.toString());
+  return data;
+}
+async function searchTelescopiusTargets(opts){
+  const L=S.location;
+  const params={lat:L.lat, lon:L.lon, timezone:'UTC', results_per_page:20, types:opts.types||'DEEP_SKY_OBJECT'};
+  if(opts.name) params.name=opts.name;
+  if(opts.mag_max!=null) params.mag_max=opts.mag_max;
+  const q=new URLSearchParams(params);
+  const data=await telescopiusGet('/targets/search?'+q.toString());
+  return data;
+}
+/* Telescopius' object payload is richer than confirmed field-by-field (only main_id/main_name/ids/
+   names/family/types are confirmed from a real example response) — RA/Dec/size/mag are inferred from
+   the search filter names, so this maps tolerantly rather than assuming exact keys, same approach as
+   the NINA deepFind parser. */
+function telescopiusObjectToTarget(rawItem){
+  const obj=rawItem.object||rawItem;
+  const id=obj.main_id||obj.id; const name=obj.main_name||(obj.names&&obj.names[0])||id;
+  if(!id) return null;
+  const found=deepFind(obj, {
+    ra:/^ra$|right_ascension|ra_deg|ra_hours/i,
+    dec:/^dec$|declination|dec_deg/i,
+    size:/^size$|^subr$|angular_size/i,
+    mag:/^mag$|magnitude/i,
+  });
+  if(found.ra==null||found.dec==null) return null; // can't place it on sky without coordinates — skip rather than guess
+  const ra = found.ra>24 ? found.ra/15 : found.ra; // tolerate either hours or degrees
+  return {
+    id: String(id).replace(/\s+/g,''), n: name, ra, dec: found.dec,
+    type: (obj.family==='deep_sky_object'?'CU':obj.family)||'CU',
+    size: found.size||30, sb: 22.0, pal:'—', custom:true,
+    telescopiusIds: obj.ids||[], telescopiusTypes: obj.types||[], telescopiusNames: obj.names||[],
+  };
+}
+
+/* ============ Telescopius CSV/links (still work standalone, no proxy needed) ============ */
 function telescopiusSearchUrl(t){ return 'https://telescopius.com/search?q='+encodeURIComponent(t.id||t.n); }
 /* CSV import: tolerant of Telescopius list exports (looks for name/ra/dec columns) */
 function importTelescopiusCsv(text){
@@ -1417,7 +1474,8 @@ function $$(q,el){ return [...(el||document).querySelectorAll(q)]; }
 function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
 
 function initShell(){
-  document.title='Night Rider 3000 (Build '+BUILD_ID+')';
+  document.title='Night Rider 3000 — Astro Session Planner (Build '+BUILD_ID+')';
+  $('#reload-btn').onclick=()=>location.reload();
   const today=new Date(); if(today.getHours()<10) today.setDate(today.getDate()-1);
   const dstr = S.uiNight || today.toISOString().slice(0,10);
   S.uiNight=dstr;
@@ -1511,7 +1569,7 @@ function renderTonight(){
   const pg=$('#page-tonight'); const ev=nightEvents(S.uiNight); const tp=tonightPlan(); const prof=profile();
   const wxCached=S.weatherCache&&S.weatherCache.data;
   pg.innerHTML=`
-  <h2>Tonight <span class="kitt-scanner-blue" title="Night Rider 3000"><span class="kitt-dot-blue"></span></span></h2>
+  <h2>Tonight</h2>
   <div class="sub">Night of ${S.uiNight} · ${prof.name}</div>
   <div class="card tight">
     <div class="row">
@@ -1949,6 +2007,7 @@ function renderTargets(){
     <button class="btn small" id="tg-addcustom">+ Custom target</button>
     <button class="btn small" id="tg-csv">Import Telescopius CSV</button>
     <input type="file" id="tg-csvfile" accept=".csv" style="display:none">
+    ${S.toggles.telescopiusApi&&S.telescopiusProxyUrl?'<button class="btn small" id="tg-tel-live">Telescopius: lists & search</button>':''}
   </div></div>
   <div class="card"><table id="tg-table"><thead><tr>${S.toggles.targetThumbs?'<th></th>':''}<th>ID</th><th>Name</th><th>Type</th><th>Size</th><th>RA / Dec</th><th>Palette</th><th>Tonight</th><th>Peak alt</th><th></th></tr></thead><tbody></tbody></table></div>`;
   const draw=()=>{
@@ -1975,9 +2034,71 @@ function renderTargets(){
     try{ const n=importTelescopiusCsv(await f.text()); toast('Imported '+n+' targets.'); draw(); }
     catch(err){ toast('CSV import failed: '+err.message, true); }
   };
+  if($('#tg-tel-live')) $('#tg-tel-live').onclick=()=>telescopiusLiveModal(draw);
   draw();
 }
 function delCustom(id){ S.customTargets=S.customTargets.filter(t=>t.id!==id); save(); renderTargets(); }
+async function telescopiusLiveModal(onImported){
+  let h=`<h3>Telescopius — live lists & search</h3>
+  <div class="row" style="margin-bottom:10px"><button class="btn small" id="tel-tab-lists">My lists</button><button class="btn small" id="tel-tab-search">Search</button></div>
+  <div id="tel-body"><span class="faint">Loading your lists…</span></div>
+  <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn" onclick="closeModal()">Close</button></div>`;
+  modal(h);
+  const body=$('#tel-body');
+  const showLists=async()=>{
+    body.innerHTML='<span class="spin"></span> loading lists…';
+    try{
+      const lists=await fetchTelescopiusLists();
+      if(!lists.length){ body.innerHTML='<span class="dim">No lists found on your Telescopius account.</span>'; return; }
+      body.innerHTML=lists.map(l=>`<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)">
+        <span>${esc(l.name)}</span><button class="btn small" data-list-id="${esc(l.id)}">Import</button></div>`).join('');
+      body.querySelectorAll('[data-list-id]').forEach(btn=>btn.onclick=async()=>{
+        btn.textContent='…'; btn.disabled=true;
+        try{
+          const list=await fetchTelescopiusList(btn.dataset.listId);
+          const items=list.objects||list.targets||[];
+          let n=0, enriched=0;
+          for(const item of items){
+            const t=telescopiusObjectToTarget(item);
+            if(!t) continue;
+            if(getTarget(t.id)){ S.telescopiusEnrichment[t.id]={telescopiusIds:t.telescopiusIds, telescopiusTypes:t.telescopiusTypes, telescopiusNames:t.telescopiusNames}; enriched++; }
+            else { S.customTargets.push(t); n++; }
+          }
+          save(); toast('Imported '+n+' new + enriched '+enriched+' existing target(s) from "'+list.name+'".'); onImported();
+          btn.textContent='Done'; 
+        }catch(e){ toast('Import failed: '+e.message,true); btn.textContent='Import'; btn.disabled=false; }
+      });
+    }catch(e){ body.innerHTML='<span class="bad">'+esc(e.message)+'</span>'; }
+  };
+  const showSearch=()=>{
+    body.innerHTML=`<div class="row" style="margin-bottom:8px"><input type="text" id="tel-search-name" placeholder="Object name (e.g. Bubble Nebula)" style="flex:1"><button class="btn small" id="tel-search-go">Search</button></div><div id="tel-search-results"></div>`;
+    $('#tel-search-go').onclick=async()=>{
+      const name=$('#tel-search-name').value.trim(); if(!name) return;
+      const res=$('#tel-search-results'); res.innerHTML='<span class="spin"></span> searching…';
+      try{
+        const data=await searchTelescopiusTargets({name, types:'DEEP_SKY_OBJECT'});
+        const items=(data.objects||[]).slice(0,15);
+        if(!items.length){ res.innerHTML='<span class="dim">No matches.</span>'; return; }
+        res.innerHTML=items.map((item,i)=>{
+          const t=telescopiusObjectToTarget(item);
+          if(!t) return '';
+          return `<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)">
+            <span>${esc(t.id)} — ${esc(t.n)} <span class="dim" style="font-size:11px">${(t.telescopiusTypes||[]).slice(0,3).map(esc).join(', ')}</span></span>
+            <button class="btn small" data-add="${i}">Add</button></div>`;
+        }).join('');
+        res.querySelectorAll('[data-add]').forEach(btn=>btn.onclick=()=>{
+          const t=telescopiusObjectToTarget(items[+btn.dataset.add]);
+          if(!t){ toast('Missing coordinates, could not add.',true); return; }
+          if(getTarget(t.id)){ S.telescopiusEnrichment[t.id]={telescopiusIds:t.telescopiusIds, telescopiusTypes:t.telescopiusTypes, telescopiusNames:t.telescopiusNames}; save(); toast(t.id+' already in catalog — enriched with Telescopius metadata.'); }
+          else { S.customTargets.push(t); save(); toast(t.id+' added.'); onImported(); }
+          btn.textContent='Added'; btn.disabled=true;
+        });
+      }catch(e){ res.innerHTML='<span class="bad">'+esc(e.message)+'</span>'; }
+    };
+  };
+  $('#tel-tab-lists').onclick=showLists; $('#tel-tab-search').onclick=showSearch;
+  showLists();
+}
 function framingModal(id){
   const t=getTarget(id); if(!t) return;
   const prof=profile(); const fov=fovDeg(prof);
@@ -2473,7 +2594,7 @@ function renderEquipment(){
 /* ============ SETTINGS page ============ */
 function renderSettings(){
   const pg=$('#page-settings'); const L=S.location; const ses=S.session;
-  const togNames={ninaExport:'NINA sequence export',ninaImport:'NINA autosave import',bside:'B-side suggestions',mooncal:'Moon calendar',flipMarkers:'Meridian flip markers',backup:'Backup/restore',snrPanel:'SNR panel',bestNights:'Best-nights finder',gapWarnings:'Dark-library gap warnings',multiTarget:'Multi-target nights',nightSheet:'Night sheet export',telescopiusLinks:'Telescopius links',telescopiusApi:'Telescopius API (patron)',targetThumbs:'Target thumbnails & framing preview',planner:'Planner tab (future nights)',imageQuality:'Image-quality summary (HFR from filenames)',aiReviewOnImport:'Auto AI-review on NINA import',autoBackupOnLoad:'Auto-backup to folder on load',ninaDashboard:'NINA live status dashboard',ninaLiveSync:'NINA live sub-count sync (experimental)',ninaPush:'Push sequences live to NINA (falls back to file)'};
+  const togNames={ninaExport:'NINA sequence export',ninaImport:'NINA autosave import',bside:'B-side suggestions',mooncal:'Moon calendar',flipMarkers:'Meridian flip markers',backup:'Backup/restore',snrPanel:'SNR panel',bestNights:'Best-nights finder',gapWarnings:'Dark-library gap warnings',multiTarget:'Multi-target nights',nightSheet:'Night sheet export',telescopiusLinks:'Telescopius links',telescopiusApi:'Telescopius live lists & search (via proxy)',targetThumbs:'Target thumbnails & framing preview',planner:'Planner tab (future nights)',imageQuality:'Image-quality summary (HFR from filenames)',aiReviewOnImport:'Auto AI-review on NINA import',autoBackupOnLoad:'Auto-backup to folder on load',ninaDashboard:'NINA live status dashboard',ninaLiveSync:'NINA live sub-count sync (experimental)',ninaPush:'Push sequences live to NINA (falls back to file)'};
   pg.innerHTML=`<h2>Settings</h2>
   <div class="grid2">
   <div class="card"><h3>Location & sky</h3>
@@ -2521,9 +2642,9 @@ function renderSettings(){
     <label class="f">Astrospheric API key</label>
     <div class="row"><input type="password" id="st-astro" value="${esc(S.keys.astrospheric)}" placeholder="paste key" style="flex:1"><button class="btn small" id="st-astrotest">Test</button></div>
     <div class="fieldnote" id="st-astrostatus">100 credits/day; each forecast fetch costs 5 — <b>the test button below uses a real fetch, so it spends 5 too.</b> The app caches for 3h. Reset your key on astrospheric.com if it was ever shared in plain text.</div>
-    <label class="f">Telescopius API key (patron)</label>
-    <div class="row"><input type="password" id="st-tel" value="${esc(S.keys.telescopius)}" placeholder="optional" style="flex:1"><button class="btn small" id="st-teltest">Test</button></div>
-    <div class="fieldnote" id="st-telstatus">Auth format confirmed via live testing: "Key &lt;key&gt;", not Bearer — even Telescopius's own docs tool has it wrong. Test hits their quote-of-the-day endpoint (free, no rate cost) to check both the key and browser CORS. Live target search still isn't wired up, that's on me — CSV import + deep links work today.</div>
+    <label class="f">Telescopius proxy URL (Cloudflare Worker)</label>
+    <div class="row"><input type="text" id="st-tel" value="${esc(S.telescopiusProxyUrl)}" placeholder="https://telescopius-proxy.<you>.workers.dev" style="flex:1"><button class="btn small" id="st-teltest">Test</button></div>
+    <div class="fieldnote" id="st-telstatus">The API key lives only in the Worker's encrypted secret now — this app never sees or stores it. Test hits the free quote-of-the-day endpoint. Powers live target lists/search alongside the existing CSV import + deep links.</div>
     <h3 style="margin-top:14px">NINA Advanced API</h3>
     <label class="f">API base URL (host:port of the Advanced API plugin)</label>
     <div class="row"><input type="text" id="st-nina" value="${esc(S.nina.url)}" placeholder="http://localhost:1888" style="flex:1">
@@ -2544,7 +2665,8 @@ function renderSettings(){
     L.sqm=+$('#st-sqm').value; L.bortle=+$('#st-bortle').value; L.source='manual'; L.name='Manually set';
     ses.altFloor=+$('#st-alt').value; ses.moonSepDefault=+$('#st-sep').value; ses.horizonOffset=+$('#st-hzo').value;
     ses.flipCostMin=+$('#st-flip').value||0; ses.nauticalBroadband=$('#st-naut').checked;
-    S.keys.anthropic=$('#st-anth').value.trim(); S.keys.astrospheric=$('#st-astro').value.trim(); S.keys.telescopius=$('#st-tel').value.trim();
+    S.keys.anthropic=$('#st-anth').value.trim(); S.keys.astrospheric=$('#st-astro').value.trim();
+    S.telescopiusProxyUrl=$('#st-tel').value.trim();
     const newNinaUrl=normalizeNinaUrl($('#st-nina').value);
     if(newNinaUrl!==S.nina.url) S.nina.confirmed=false;
     S.nina.url=newNinaUrl;
@@ -2605,22 +2727,19 @@ function renderSettings(){
     }
   };
   $('#st-teltest').onclick=async()=>{
-    const key=$('#st-tel').value.trim();
+    const url=$('#st-tel').value.trim();
     const st=$('#st-telstatus');
-    if(!key){ st.innerHTML='<span class="bad">Paste a key first.</span>'; return; }
-    const prevKey=S.keys.telescopius;
-    S.keys.telescopius=key;
+    if(!url){ st.innerHTML='<span class="bad">Paste your Worker URL first.</span>'; return; }
+    const prevUrl=S.telescopiusProxyUrl;
+    S.telescopiusProxyUrl=url;
     st.innerHTML='<span class="spin"></span> testing…';
     try{
       const data=await telescopiusGet('/quote-of-the-day');
       save();
-      st.innerHTML='<span class="good">✓ Connected — key and browser CORS both confirmed working.</span>'+(data&&data.text?' <span class="dim" style="font-size:11px">"'+esc(data.text.slice(0,70))+'…"</span>':'');
+      st.innerHTML='<span class="good">✓ Proxy working, key valid.</span>'+(data&&data.text?' <span class="dim" style="font-size:11px">"'+esc(data.text.slice(0,70))+'…"</span>':'');
     }catch(e){
-      S.keys.telescopius=prevKey;
-      const cors=/failed to fetch|networkerror|load failed/i.test(e.message);
-      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'.</span> '+(cors
-        ?'This is the real CORS test — curl can\u2019t check this, only a browser can. A failure here means Telescopius isn\u2019t sending back Access-Control-Allow-Origin for your GitHub Pages origin, separate from whether the key itself works.'
-        :'Key or endpoint issue — the curl test that worked used the same format, so double-check the key was pasted fully.');
+      S.telescopiusProxyUrl=prevUrl;
+      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> Check the Worker URL, that it\u2019s deployed with the real proxy code (not the default Hello World template), and that TELESCOPIUS_API_KEY is set as a Secret in its settings.';
     }
   };
   $$('[data-pick]').forEach(b=>b.onclick=async()=>{ await pickFolder(b.dataset.pick); renderSettings(); });
@@ -2645,7 +2764,7 @@ function renderSettings(){
   if($('#st-hrzdel')) $('#st-hrzdel').onclick=()=>{ S.horizon=null; S.horizonSource=null; save(); renderSettings(); };
   $('#st-hrzpaste').onclick=()=>{ try{ const n=importHrz($('#st-hrztext').value); S.horizonSource='pasted manually'; save(); toast(n+' points applied.'); renderSettings(); }catch(err){ toast(err.message,true); } };
   if($('#st-exp')) $('#st-exp').onclick=async()=>{
-    const d=structuredClone(S); d.keys={anthropic:'',astrospheric:'',telescopius:''};
+    const d=structuredClone(S); d.keys={anthropic:'',astrospheric:''};
     const name='NightRider-backup-'+new Date().toISOString().slice(0,10)+'.json';
     const handle=await getFolder('backup', true);
     if(handle){ try{ const fh=await handle.getFileHandle(name,{create:true}); const w=await fh.createWritable(); await w.write(JSON.stringify(d,null,1)); await w.close(); toast('Backup saved to '+(S.folders.backup?.name||'backup folder')+' (API keys excluded).'); return; }catch(e){ toast('Folder write failed, downloading instead: '+e.message, true); } }
@@ -2676,7 +2795,7 @@ async function autoBackupSilent(){
   try{
     const handle=await getFolder('backup', false); // no prompt on boot; only if already granted
     if(!handle) return;
-    const d=structuredClone(S); d.keys={anthropic:'',astrospheric:'',telescopius:''};
+    const d=structuredClone(S); d.keys={anthropic:'',astrospheric:''};
     const name='NightRider-backup-'+new Date().toISOString().slice(0,10)+'.json';
     const fh=await handle.getFileHandle(name,{create:true});
     const w=await fh.createWritable(); await w.write(JSON.stringify(d,null,1)); await w.close();
