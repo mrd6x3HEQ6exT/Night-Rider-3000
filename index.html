@@ -469,7 +469,7 @@ if(typeof structuredClone==='undefined'){
   window.structuredClone=o=>JSON.parse(JSON.stringify(o)); // every use in this app is plain JSON-safe state
 }
 const A = Astronomy; // embedded astronomy-engine
-const BUILD_ID = '2026-07-15 14:28 UTC';
+const BUILD_ID = '2026-07-15 8:05 PM MST';
 
 /* Curated DSO catalog for the app's rig(s). Real FOV varies by active profile (e.g. mono/ASI2600MM
    ~3.0°×2.0°, OSC/ASI6200MC ~4.6°×3.1° — see fovDeg()); one target (Rho Oph, 240') exceeds the
@@ -1417,6 +1417,7 @@ function $$(q,el){ return [...(el||document).querySelectorAll(q)]; }
 function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
 
 function initShell(){
+  document.title='Night Rider 3000 (Build '+BUILD_ID+')';
   const today=new Date(); if(today.getHours()<10) today.setDate(today.getDate()-1);
   const dstr = S.uiNight || today.toISOString().slice(0,10);
   S.uiNight=dstr;
