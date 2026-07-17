@@ -3401,6 +3401,18 @@ function fieldPickerGroup(title, fields, stateObj, tab, src){
   ${fields.map(f=>`<label class="tog"><input type="checkbox" data-fieldtog="${tab}|${src}|${f.key}" ${stateObj[f.key]?'checked':''}><span class="tr"></span>${esc(f.label)}</label>`).join('')}
   </div></div>`;
 }
+/* Settings re-renders the whole form from S on every partial action (pick a folder, reconnect,
+   import a horizon file) — that used to silently discard anything typed into OTHER fields but not
+   yet hit "Save settings" (this is exactly what happened to the Telescopius proxy URL earlier).
+   Snapshot every text/password/number/select/textarea value first, restore it after the redraw;
+   state-driven display (folder status, toggle checkboxes) still updates normally since those come
+   fresh from S regardless. */
+function preserveSettingsInputs(renderFn){
+  const grabbed={};
+  $$('#page-settings input[type=text], #page-settings input[type=password], #page-settings input[type=number], #page-settings textarea, #page-settings select').forEach(el=>{ if(el.id) grabbed[el.id]=el.value; });
+  renderFn();
+  for(const id in grabbed){ const el=$('#'+id); if(el) el.value=grabbed[id]; }
+}
 function renderSettings(){
   const pg=$('#page-settings'); const L=S.location; const ses=S.session;
   const togNames={ninaExport:'NINA sequence export',ninaImport:'NINA autosave import',bside:'B-side suggestions',mooncal:'Moon calendar',flipMarkers:'Meridian flip markers',backup:'Backup/restore',snrPanel:'SNR panel',bestNights:'Best-nights finder',gapWarnings:'Dark-library gap warnings',multiTarget:'Multi-target nights',nightSheet:'Night sheet export',telescopiusLinks:'Telescopius links',telescopiusApi:'Telescopius live lists & search (via proxy)',targetThumbs:'Target thumbnails & framing preview',planner:'Planner tab (future nights)',imageQuality:'Image-quality summary (HFR from filenames)',aiReviewOnImport:'Auto AI-review on NINA import',autoBackupOnLoad:'Auto-backup to folder on load',ninaDashboard:'NINA live status dashboard',ninaLiveSync:'NINA live sub-count sync (experimental)',ninaPush:'Push sequences live to NINA (falls back to file)',altitudeChart:'Altitude-vs-time chart (Tonight/Planner)',hfrChart:'HFR trend chart (Projects, needs image scan)',satelliteRisk:'Satellite-trail twilight risk note',cooldownReminder:'Camera cooldown start reminder',sessionChecklist:'Pre-session checklist',visitDigest:'"Since you last visited" digest'};
@@ -3595,7 +3607,7 @@ function renderSettings(){
     const [tab,src,key]=cb.dataset.fieldtog.split('|');
     S.weatherFields[tab][src][key]=cb.checked; save();
   });
-  $$('[data-pick]').forEach(b=>b.onclick=async()=>{ await pickFolder(b.dataset.pick); renderSettings(); });
+  $$('[data-pick]').forEach(b=>b.onclick=async()=>{ await pickFolder(b.dataset.pick); preserveSettingsInputs(renderSettings); });
   $('#st-nina-loc').onclick=async()=>{
     const st=$('#st-nina-loc-status');
     st.innerHTML='<span class="spin"></span> pulling from NINA…';
@@ -3608,14 +3620,14 @@ function renderSettings(){
       st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> <details style="margin-top:4px"><summary class="dim" style="cursor:pointer;font-size:11px">raw response</summary><pre class="mono" style="font-size:10px;white-space:pre-wrap">'+esc(JSON.stringify(e.raw??{},null,1)).slice(0,800)+'</pre></details>';
     }
   };
-  $$('[data-reconnect]').forEach(b=>b.onclick=async()=>{ const h=await getFolder(b.dataset.reconnect,true); toast(h?'Reconnected.':'Still not connected — try Change instead.', !h); renderSettings(); });
+  $$('[data-reconnect]').forEach(b=>b.onclick=async()=>{ const h=await getFolder(b.dataset.reconnect,true); toast(h?'Reconnected.':'Still not connected — try Change instead.', !h); preserveSettingsInputs(renderSettings); });
   $$('#page-settings [data-tog]').forEach(cb=>cb.onchange=()=>{ S.toggles[cb.dataset.tog]=cb.checked; save(); applyNavVisibility(); });
   $('#st-hrz').onclick=()=>$('#st-hrzfile').click();
   $('#st-hrzfile').onchange=async e=>{ const f=e.target.files[0]; if(!f)return;
-    try{ const n=importHrz(await f.text()); S.horizonSource='imported: '+f.name; save(); toast(n+' horizon points imported.'); renderSettings(); }
+    try{ const n=importHrz(await f.text()); S.horizonSource='imported: '+f.name; save(); toast(n+' horizon points imported.'); preserveSettingsInputs(renderSettings); }
     catch(err){ toast('Horizon import failed: '+err.message,true); } };
-  if($('#st-hrzdel')) $('#st-hrzdel').onclick=()=>{ S.horizon=null; S.horizonSource=null; save(); renderSettings(); };
-  $('#st-hrzpaste').onclick=()=>{ try{ const n=importHrz($('#st-hrztext').value); S.horizonSource='pasted manually'; save(); toast(n+' points applied.'); renderSettings(); }catch(err){ toast(err.message,true); } };
+  if($('#st-hrzdel')) $('#st-hrzdel').onclick=()=>{ S.horizon=null; S.horizonSource=null; save(); preserveSettingsInputs(renderSettings); };
+  $('#st-hrzpaste').onclick=()=>{ try{ const n=importHrz($('#st-hrztext').value); S.horizonSource='pasted manually'; save(); toast(n+' points applied.'); preserveSettingsInputs(renderSettings); }catch(err){ toast(err.message,true); } };
   if($('#st-exp')) $('#st-exp').onclick=async()=>{
     const d=structuredClone(S); d.keys={anthropic:'',astrospheric:''};
     const name='NightRider-backup-'+new Date().toISOString().slice(0,10)+'.json';
