@@ -24,6 +24,10 @@
   --good:#4FBF7A; --warn:#E0A030; --bad:#E05A4E;
   --ha:#E05A4E; --oiii:#3FBFB4; --sii:#E0A030; --lum:#D8DEE9;
   --red:#D9534F; --grn:#5CB85C; --blu:#4F8FE0; --bb:#9B7FD4; --db:#C56BD6;
+  /* Dedicated imaging-conditions palette — deliberately its own set, not --good/--warn/--bad,
+     which are reused elsewhere (e.g. --bad doubles as the Ha filter swatch). More saturated than
+     the app's muted UI colors on purpose: this trio answers one question at a glance — go/no-go. */
+  --sky-go:#3ED66B; --sky-caution:#F5A623; --sky-nogo:#FF3B30;
   --mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
   --sans:'IBM Plex Sans',system-ui,Segoe UI,sans-serif;
   --disp:'Barlow Condensed','IBM Plex Sans',system-ui,sans-serif;
@@ -164,6 +168,38 @@ textarea{font-family:var(--mono);resize:vertical}
 .klist b{color:var(--text);font-weight:500}
 details.adv{margin-top:8px}
 details.adv summary{cursor:pointer;color:var(--dim);font-size:12px}
+
+/* Sky-condition legend chip (go/caution/no-go dot + label) shared by weather strip & forecast tab */
+.skychip{display:inline-flex;align-items:center;gap:5px;font:11px var(--mono);color:var(--dim)}
+.skychip .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+
+/* Weather alert — deliberately outside the redmode filter (same as #modal-bg) so it stays fully
+   legible and urgent-red even in night-vision mode; a rain/gust warning is exactly the moment you
+   want full-brightness color, not a dimmed sepia version of it. */
+#wxalert-bg{position:fixed;inset:0;background:rgba(20,2,2,.88);display:none;align-items:center;justify-content:center;z-index:500;padding:20px}
+#wxalert-bg.open{display:flex}
+#wxalert{background:linear-gradient(180deg,#2A0E0C,#160705);border:2px solid var(--sky-nogo);border-radius:14px;padding:28px 32px;width:min(560px,94vw);box-shadow:0 0 0 4px rgba(255,59,48,.15),0 20px 60px rgba(0,0,0,.7);text-align:center;animation:wxpulse 1.6s ease-in-out infinite}
+@keyframes wxpulse{0%,100%{box-shadow:0 0 0 4px rgba(255,59,48,.15),0 20px 60px rgba(0,0,0,.7)}50%{box-shadow:0 0 0 10px rgba(255,59,48,.3),0 20px 60px rgba(0,0,0,.7)}}
+@media (prefers-reduced-motion: reduce){#wxalert{animation:none}}
+#wxalert h2{font:600 26px var(--disp);letter-spacing:.04em;text-transform:uppercase;color:var(--sky-nogo);margin-bottom:10px}
+#wxalert .wxalert-body{font-size:15px;color:var(--text);line-height:1.5;margin-bottom:18px}
+#wxalert .wxalert-body b{color:#fff}
+#wxalert .row{justify-content:center}
+#wxalert-snooze{background:rgba(0,0,0,.25);border-radius:8px;padding:12px;margin-top:14px;display:none}
+#wxalert-snooze.open{display:block}
+#wxalert-snooze .snoozerow{display:flex;align-items:center;gap:8px;justify-content:center;margin:6px 0}
+#wxalert-snooze .snoozerow input{width:64px}
+#wxalert-snooze .snoozerow label{font-size:12px;color:var(--dim);min-width:34px;text-align:left}
+
+/* Forecast tab */
+.fcgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:10px}
+.fcday{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:12px}
+.fcday h4{font:600 13px var(--sans);color:var(--amber);margin-bottom:8px}
+.fcday .fcsrc{margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.fcday .fcsrc:first-child{margin-top:0;padding-top:0;border-top:none}
+.fcday .fcsrc h5{font:600 10.5px var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:4px}
+.fcrow{display:flex;justify-content:space-between;font:12px var(--mono);padding:1px 0}
+.fcrow .k{color:var(--faint)}
 </style>
 </head>
 <body>
@@ -182,6 +218,7 @@ details.adv summary{cursor:pointer;color:var(--dim);font-size:12px}
 <div id="main">
   <nav id="sidebar">
     <button class="navbtn active" data-page="tonight">Tonight</button>
+    <button class="navbtn" data-page="forecast">3-Day Forecast</button>
     <button class="navbtn" data-page="planner">Planner</button>
     <button class="navbtn" data-page="targets">Targets</button>
     <button class="navbtn" data-page="projects">Projects</button>
@@ -193,6 +230,7 @@ details.adv summary{cursor:pointer;color:var(--dim);font-size:12px}
   </nav>
   <div id="content">
     <div class="page active" id="page-tonight"></div>
+    <div class="page" id="page-forecast"></div>
     <div class="page" id="page-planner"></div>
     <div class="page" id="page-targets"></div>
     <div class="page" id="page-projects"></div>
@@ -204,6 +242,18 @@ details.adv summary{cursor:pointer;color:var(--dim);font-size:12px}
 </div>
 </div>
 <div id="modal-bg"><div id="modal"></div></div>
+<div id="wxalert-bg"><div id="wxalert">
+  <h2 id="wxalert-title">Weather Warning</h2>
+  <div class="wxalert-body" id="wxalert-body"></div>
+  <div class="row">
+    <button class="btn" id="wxalert-snoozebtn">Snooze</button>
+    <button class="btn primary" id="wxalert-dismiss">Dismiss</button>
+  </div>
+  <div id="wxalert-snooze">
+    <div class="snoozerow"><label>Hours</label><input type="number" id="wxalert-hrs" min="1" max="24" value="2"><button class="btn small" id="wxalert-snooze-hrs">Snooze</button></div>
+    <div class="snoozerow"><label>Days</label><input type="number" id="wxalert-days" min="1" max="14" value="1"><button class="btn small" id="wxalert-snooze-days">Snooze</button></div>
+  </div>
+</div></div>
 <div class="tl-tip" id="tltip"></div>
 <script>
 /*
@@ -633,7 +683,27 @@ const DEFAULT_STATE = {
   nina:{url:'http://localhost:1888', confirmed:false},
   ai:{model:'claude-haiku-4-5-20251001', citeNorms:true, autoModel:true},
   toggles:{ninaExport:true, ninaImport:true, bside:true, mooncal:true, flipMarkers:true, backup:true, snrPanel:true, bestNights:true, gapWarnings:true, multiTarget:true, nightSheet:true, telescopiusLinks:true, telescopiusApi:false, targetThumbs:true, planner:true, imageQuality:true, aiReviewOnImport:false, autoBackupOnLoad:false, ninaDashboard:true, ninaLiveSync:false, ninaPush:true, altitudeChart:true, hfrChart:true, satelliteRisk:true, cooldownReminder:true, sessionChecklist:true, visitDigest:true},
-  weatherCache:null, // {fetchedAt, dateKey, data, creditsUsedToday, creditsDate}
+  weatherCache:null, // {fetchedAt, dateKey, data, creditsUsedToday, creditsDate} — Astrospheric only; stays on its own ~3h cache (100 credits/day cap)
+  tempest:{stationId:'84253', token:'', confirmed:false},
+  tempestCache:null, // {fetchedAt, data} — refreshed on the 30-min poll, not credit-limited like Astrospheric
+  // Which fields render on Tonight vs the 3-Day Forecast tab, independently per source.
+  // Astrospheric keys: cloud, transparency, seeing, wind, dew, temp (dew/temp are Kelvin-derived; smoke isn't
+  // offered — Astrospheric's V1 API has no smoke/AQI field, it's folded into transparency instead).
+  // Tempest keys: temp, feelsLike, humidity, pressure, precipProb, windAvg, windGust, windDir, uv, solar, lux, dewpoint, wetBulb, strikeCount.
+  weatherFields:{
+    tonight:{
+      astro:{cloud:true, transparency:true, seeing:true, wind:true, dew:true, temp:false},
+      tempest:{temp:true, windAvg:true, windGust:true, precipProb:true, feelsLike:false, humidity:false, pressure:false, windDir:false, uv:false, solar:false, lux:false, dewpoint:false, wetBulb:false, strikeCount:false},
+    },
+    forecast:{
+      astro:{cloud:true, transparency:true, seeing:true, wind:true, dew:true, temp:false},
+      tempest:{temp:true, windAvg:true, windGust:true, precipProb:true, feelsLike:false, humidity:true, pressure:false, windDir:false, uv:false, solar:false, lux:false, dewpoint:false, wetBulb:false, strikeCount:false},
+    },
+  },
+  forecastSources:{astro:true, tempest:true}, // which source(s) show on the 3-Day Forecast tab
+  // Rain/damaging-gust alert engine — sourced from Tempest only (Astrospheric's API has no precip or
+  // gust field at all, so it structurally can't feed this). Checked every 30 min against the next 6h.
+  wxAlert:{enabled:true, rainProbPct:40, gustMph:35, snoozedUntil:0, dismissedUntil:0, lastFireKey:null},
   uiNight:null,
 };
 
@@ -647,6 +717,10 @@ function loadState(){
     // shallow-merge new default keys forward
     for(const k of Object.keys(DEFAULT_STATE)) if(!(k in s)) s[k]=structuredClone(DEFAULT_STATE[k]);
     for(const k of Object.keys(DEFAULT_STATE.toggles)) if(!(k in s.toggles)) s.toggles[k]=DEFAULT_STATE.toggles[k];
+    for(const tab of ['tonight','forecast']) for(const src of ['astro','tempest'])
+      for(const k of Object.keys(DEFAULT_STATE.weatherFields[tab][src])) if(!(k in s.weatherFields[tab][src])) s.weatherFields[tab][src][k]=DEFAULT_STATE.weatherFields[tab][src][k];
+    for(const k of Object.keys(DEFAULT_STATE.tempest)) if(!(k in s.tempest)) s.tempest[k]=DEFAULT_STATE.tempest[k];
+    for(const k of Object.keys(DEFAULT_STATE.wxAlert)) if(!(k in s.wxAlert)) s.wxAlert[k]=DEFAULT_STATE.wxAlert[k];
     return s;
   }catch(e){ console.error('state load failed',e); return structuredClone(DEFAULT_STATE); }
 }
@@ -905,6 +979,17 @@ function satelliteRiskWindow(w, ev){
    Raw usable minutes alone can't distinguish a bright, well-framed target with a short window from a
    faint, oversized/undersized one with a long window. Blends usable time, moon quality (softened for
    narrowband-tolerant palettes), and how well the target's size fits the active profile's frame. */
+/* Target apparent size vs. this rig's actual frame — reused by targetScore (soft penalty), the AI
+   Advisor's candidate list (hard cutoff below), and the Targets-page "% of frame" badge. */
+function frameFitRatio(t, prof){
+  const fov=fovDeg(prof||profile());
+  const frameArcmin=Math.min(fov.w,fov.h)*60;
+  return t.size / frameArcmin;
+}
+// Below this, a target fills so little of the frame it's really a different-instrument target
+// (small galaxy/planetary nebula territory — a long-FL SCT/RASA shot, not this wide-field rig).
+// Excluded outright from what the AI Advisor is shown, not just deprioritized.
+const FOV_HARD_CUTOFF = 0.04;
 function targetScore(t, tn){
   const usableMin = tn.windows.reduce((a,w)=>a+w.minutes,0);
   if(usableMin<=0) return 0;
@@ -913,9 +998,7 @@ function targetScore(t, tn){
   for(const smp of tn.samples){ if(smp.ok){ moonSum+=Math.min(smp.moonSep,120); moonN++; } }
   const avgMoonSep = moonN? moonSum/moonN : 90;
   const moonFactor = narrowbandFriendly ? 0.85+0.15*Math.min(1,avgMoonSep/60) : 0.5+0.5*Math.min(1,avgMoonSep/90);
-  const prof=profile(); const fov=fovDeg(prof);
-  const frameArcmin = Math.min(fov.w,fov.h)*60;
-  const fitRatio = t.size / frameArcmin;
+  const fitRatio = frameFitRatio(t);
   const fovFactor = fitRatio<0.05 ? 0.6 : fitRatio>1.3 ? 0.7 : 1 - Math.abs(Math.log(fitRatio/0.4))*0.15;
   return usableMin * moonFactor * Math.max(0.4,Math.min(1,fovFactor));
 }
@@ -1075,7 +1158,7 @@ function cloudAt(date){
   const v=p.series.cloud[idx];
   return v==null?null:(v>1? v/100 : v);
 }
-/* Generic version of cloudAt for any parsed weather dimension (transparency, seeing, dew, temp, smoke) —
+/* Generic version of cloudAt for any parsed weather dimension (transparency, seeing, dew, temp) —
    these were already being tolerantly extracted from Astrospheric's response but never surfaced anywhere. */
 function seriesAt(key, date){
   const c=S.weatherCache; if(!c||!c.data) return null;
@@ -1084,16 +1167,193 @@ function seriesAt(key, date){
   if(idx<0||idx>=p.series[key].length) return null;
   return p.series[key][idx];
 }
-/* Dew risk: temp/dew-point spread narrowing below ~3°C(or unit-equivalent)/5°F is the standard
-   community rule-of-thumb warning sign for condensation forming on optics. */
-function dewRiskAt(date){
+/* Unit conversions — confirmed against Astrospheric's own published API docs (GetForecastData_V1):
+   RDPS_Temperature/RDPS_DewPoint are Kelvin (200-350), RDPS_WindVelocity is m/s (0-55). Not ambiguous. */
+function k2f(k){ return k==null?null:(k-273.15)*9/5+32; }
+function mps2mph(v){ return v==null?null:v*2.23694; }
+/* Dew-point spread: since Kelvin and Celsius degrees are the same size, a plain Kelvin-vs-Kelvin
+   difference is already numerically identical to a Celsius spread — no unit conversion needed here,
+   unlike display values. <3° is the standard optics-condensation rule of thumb. */
+function dewSpreadAt(date){
   const t=seriesAt('temp',date), d=seriesAt('dew',date);
   if(t==null||d==null) return null;
-  const spread=Math.abs(t-d);
-  // Astrospheric's temp unit is unconfirmed (C vs F) — a spread this small is a real risk either way,
-  // but treat >20 as "must be Fahrenheit" and scale the threshold accordingly.
-  const threshold = Math.abs(t)>50 ? 5 : 3;
-  return {spread, risk: spread<threshold};
+  return Math.abs(t-d);
+}
+/* Astrospheric field registry — drives both the Tonight weather strip and the 3-Day Forecast tab.
+   classify() returns 'go'|'caution'|'nogo'|null (null = no opinion / informational only).
+   Transparency's band direction is intentionally the OPPOSITE of Seeing's — per Astrospheric's own
+   docs (0-5 Excellent ... >27 Cloudy), LOWER transparency numbers are better. Easy to get backwards. */
+const ASTRO_FIELDS=[
+  {key:'cloud', label:'Cloud', get:date=>seriesAt('cloud',date),
+    fmt:v=>{ if(v==null)return null; if(v<=1)v*=100; return Math.round(v)+'%'; },
+    classify:v=>{ if(v==null)return null; if(v<=1)v*=100; return v<20?'go':v<60?'caution':'nogo'; }},
+  {key:'transparency', label:'Transp.', get:date=>seriesAt('transparency',date),
+    fmt:v=>v==null?null:v.toFixed(1),
+    classify:v=>v==null?null:(v<=9?'go':v<=23?'caution':'nogo')}, // 0-9 Excellent/Above Avg, 10-23 Avg/Below Avg, 24+ Poor/Cloudy
+  {key:'seeing', label:'Seeing', get:date=>seriesAt('seeing',date),
+    fmt:v=>v==null?null:v.toFixed(1),
+    classify:v=>v==null?null:(v>=4?'go':v>=3?'caution':'nogo')}, // 4-5 Above Avg/Excellent, 3 Average, 0-2 Below Avg/Poor/Cloudy
+  {key:'wind', label:'Wind', get:date=>{ const v=seriesAt('wind',date); return v==null?null:mps2mph(v); },
+    fmt:v=>v==null?null:Math.round(v)+' mph',
+    classify:v=>v==null?null:(v<10?'go':v<=20?'caution':'nogo')},
+  {key:'dew', label:'Dew risk', get:date=>dewSpreadAt(date),
+    fmt:v=>v==null?null:v.toFixed(1)+'°',
+    classify:v=>v==null?null:(v>5?'go':v>=3?'caution':'nogo')},
+  {key:'temp', label:'Temp', get:date=>{ const v=seriesAt('temp',date); return v==null?null:k2f(v); },
+    fmt:v=>v==null?null:Math.round(v)+'°F',
+    classify:()=>null}, // informational only — not a go/no-go signal on its own
+];
+
+/* ============ Tempest (WeatherFlow) — personal station forecast ============
+   Requesting US units directly via query params (units_temp=f&units_wind=mph&...) rather than
+   converting client-side — Astrospheric's API has no unit param so we convert by hand there, but
+   Tempest's does, per WeatherFlow's own docs. Field extraction is still regex-tolerant (deepFind-style)
+   since the exact better_forecast hourly shape hasn't been confirmed against a real response yet. */
+function tempestUrl(path, extraParams){
+  const p=new URLSearchParams({station_id:S.tempest.stationId, token:S.tempest.token, units_temp:'f', units_wind:'mph', units_pressure:'inhg', units_precip:'in', units_distance:'mi', ...(extraParams||{})});
+  return 'https://swd.weatherflow.com/swd/rest/'+path+'?'+p.toString();
+}
+async function fetchTempestForecast(force){
+  if(!S.tempest.stationId || !S.tempest.token) return null;
+  const c=S.tempestCache;
+  if(!force && c && c.data && (Date.now()-c.fetchedAt) < 25*60e3) return c.data;
+  try{
+    const res=await fetchWithTimeout(tempestUrl('better_forecast'), {}, 8000);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    S.tempestCache={fetchedAt:Date.now(), data};
+    save();
+    return data;
+  }catch(e){
+    console.error(e);
+    const cors=/failed to fetch|networkerror|load failed/i.test(e.message);
+    toast('Tempest fetch failed: '+e.message+(cors?'. If this is a CORS error, WeatherFlow\u2019s API may need a proxy Worker \u2014 same pattern as Telescopius \u2014 tell Claude.':''), true);
+    return null;
+  }
+}
+/* Finds the hourly forecast array anywhere in the response (object with a time-like field and
+   several numeric weather fields) rather than assuming an exact path, since the shape is unconfirmed. */
+function parseTempestForecast(data){
+  if(!data) return null;
+  let hourly=null;
+  (function find(o){
+    if(hourly||!o||typeof o!=='object') return;
+    if(Array.isArray(o) && o.length>4 && o[0] && typeof o[0]==='object'){
+      const keys=Object.keys(o[0]);
+      const hasTime=keys.some(k=>/^time$/i.test(k)||/time.*utc|utc.*time|timestamp/i.test(k));
+      const numericCount=Object.values(o[0]).filter(v=>typeof v==='number').length;
+      if(hasTime && numericCount>=3){ hourly=o; return; }
+    }
+    for(const v of Object.values(o)) if(v&&typeof v==='object') find(v);
+  })(data);
+  if(!hourly) return null;
+  return hourly.map(h=>{
+    const timeKey=Object.keys(h).find(k=>/^time$/i.test(k)||/time.*utc|utc.*time|timestamp/i.test(k));
+    const raw=timeKey!=null?h[timeKey]:null;
+    const t=raw!=null?new Date(raw*1000):null; // WeatherFlow timestamps are Unix seconds
+    return {...h, _t:(t&&!isNaN(t))?t:null};
+  });
+}
+let _tempestParsed=null, _tempestParsedFor=null;
+function tempestHourly(){
+  const c=S.tempestCache; if(!c||!c.data) return null;
+  if(_tempestParsedFor!==c.fetchedAt){ _tempestParsed=parseTempestForecast(c.data); _tempestParsedFor=c.fetchedAt; }
+  return _tempestParsed;
+}
+const TEMPEST_KEY_PATTERNS={
+  temp:/^air_?temp(erature)?$/i, feelsLike:/feels_?like/i, humidity:/humidity/i,
+  pressure:/station_?pressure|sea_?level_?pressure|^pressure$/i, precipProb:/precip.*prob/i,
+  windAvg:/wind_?avg|^wind_?speed$/i, windGust:/wind_?gust/i, windDir:/wind_?direction|wind_?bearing/i,
+  uv:/^uv$/i, solar:/solar_?radiation/i, lux:/brightness|^lux$/i, dewpoint:/dew_?point/i,
+  wetBulb:/wet_?bulb/i, strikeCount:/strike.*count|lightning.*count/i,
+};
+function tempestFieldFromItem(item,key){
+  const pat=TEMPEST_KEY_PATTERNS[key]; if(!pat||!item) return null;
+  for(const k of Object.keys(item)) if(pat.test(k) && typeof item[k]==='number') return item[k];
+  return null;
+}
+function tempestSeriesAt(key,date){
+  const hourly=tempestHourly(); if(!hourly) return null;
+  let best=null,bestDiff=Infinity;
+  for(const h of hourly){ if(!h._t) continue; const diff=Math.abs(h._t-date); if(diff<bestDiff){bestDiff=diff;best=h;} }
+  if(!best||bestDiff>45*60e3) return null;
+  return tempestFieldFromItem(best,key);
+}
+/* Tempest field registry — mirrors ASTRO_FIELDS' shape so Tonight/3-Day rendering can treat both
+   sources identically. Requested units already come back as °F/mph/in via the query params above,
+   so these are display-only, no client-side conversion. */
+const TEMPEST_FIELDS=[
+  {key:'temp', label:'Temp', get:date=>tempestSeriesAt('temp',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0F', classify:()=>null},
+  {key:'feelsLike', label:'Feels like', get:date=>tempestSeriesAt('feelsLike',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0F', classify:()=>null},
+  {key:'humidity', label:'Humidity', get:date=>tempestSeriesAt('humidity',date), fmt:v=>v==null?null:Math.round(v)+'%', classify:()=>null},
+  {key:'pressure', label:'Pressure', get:date=>tempestSeriesAt('pressure',date), fmt:v=>v==null?null:v.toFixed(2)+' inHg', classify:()=>null},
+  {key:'precipProb', label:'Rain chance', get:date=>tempestSeriesAt('precipProb',date), fmt:v=>v==null?null:Math.round(v)+'%',
+    classify:v=>v==null?null:(v<20?'go':v<=40?'caution':'nogo')},
+  {key:'windAvg', label:'Wind avg', get:date=>tempestSeriesAt('windAvg',date), fmt:v=>v==null?null:Math.round(v)+' mph',
+    classify:v=>v==null?null:(v<10?'go':v<=20?'caution':'nogo')},
+  {key:'windGust', label:'Wind gust', get:date=>tempestSeriesAt('windGust',date), fmt:v=>v==null?null:Math.round(v)+' mph',
+    classify:v=>v==null?null:(v<15?'go':v<=30?'caution':'nogo')},
+  {key:'windDir', label:'Wind dir', get:date=>tempestSeriesAt('windDir',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0', classify:()=>null},
+  {key:'uv', label:'UV', get:date=>tempestSeriesAt('uv',date), fmt:v=>v==null?null:v.toFixed(1), classify:()=>null},
+  {key:'solar', label:'Solar', get:date=>tempestSeriesAt('solar',date), fmt:v=>v==null?null:Math.round(v)+' W/m\u00b2', classify:()=>null},
+  {key:'lux', label:'Brightness', get:date=>tempestSeriesAt('lux',date), fmt:v=>v==null?null:Math.round(v)+' lux', classify:()=>null},
+  {key:'dewpoint', label:'Dew point', get:date=>tempestSeriesAt('dewpoint',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0F', classify:()=>null},
+  {key:'wetBulb', label:'Wet bulb', get:date=>tempestSeriesAt('wetBulb',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0F', classify:()=>null},
+  {key:'strikeCount', label:'Lightning', get:date=>tempestSeriesAt('strikeCount',date), fmt:v=>v==null?null:(v>0?v+' strikes':'none'),
+    classify:v=>v==null?null:(v>0?'nogo':'go')},
+];
+
+/* ============ Weather alert engine (rain / damaging gust, next 6h, Tempest-sourced) ============
+   Astrospheric structurally can't feed this — its API has no precipitation or gust field at all.
+   Polls every 30 min while the app is open. This is a foreground-only alert: it fires while Night
+   Rider is open in a tab, not a phone push notification when the app/tab is closed. Push notification
+   delivery (Web Push + a scheduled Cloudflare Worker) was deliberately deferred to a later session. */
+function wxAlertCheck(){
+  const a=S.wxAlert;
+  const hourly=tempestHourly(); if(!hourly) return null;
+  const now=Date.now(), horizon=now+6*3600e3;
+  let rainHit=null, gustHit=null;
+  for(const h of hourly){
+    if(!h._t) continue;
+    const t=h._t.getTime();
+    if(t<now-30*60e3||t>horizon) continue;
+    const rp=tempestFieldFromItem(h,'precipProb');
+    if(rp!=null && rp>=a.rainProbPct && (!rainHit||rp>rainHit.value)) rainHit={value:rp, time:h._t};
+    const g=tempestFieldFromItem(h,'windGust');
+    if(g!=null && g>=a.gustMph && (!gustHit||g>gustHit.value)) gustHit={value:g, time:h._t};
+  }
+  return (rainHit||gustHit) ? {rainHit,gustHit} : null;
+}
+function showWxAlert(hit){
+  const parts=[];
+  if(hit.rainHit) parts.push(`<b>Rain</b> \u2014 ${Math.round(hit.rainHit.value)}% chance around ${fmtHM(hit.rainHit.time)}`);
+  if(hit.gustHit) parts.push(`<b>Damaging wind gust</b> \u2014 ${Math.round(hit.gustHit.value)} mph around ${fmtHM(hit.gustHit.time)}`);
+  $('#wxalert-title').textContent = hit.gustHit&&hit.rainHit ? 'Rain & Wind Warning' : hit.gustHit ? 'Wind Warning' : 'Rain Warning';
+  $('#wxalert-body').innerHTML = parts.join('<br>')+'<br><span class="dim" style="font-size:12px">Next 6 hours, from your Tempest station forecast.</span>';
+  $('#wxalert-snooze').classList.remove('open');
+  $('#wxalert-bg').classList.add('open');
+}
+function closeWxAlert(){ $('#wxalert-bg').classList.remove('open'); }
+async function pollWeatherAlert(){
+  if(!S.wxAlert.enabled || !S.tempest.stationId || !S.tempest.token) return;
+  await fetchTempestForecast(false);
+  const hit=wxAlertCheck();
+  const now=Date.now();
+  if(!hit) return; // condition cleared naturally — leave any open alert for the user to dismiss themselves
+  if(now<S.wxAlert.snoozedUntil || now<S.wxAlert.dismissedUntil) return;
+  showWxAlert(hit);
+}
+function initWxAlert(){
+  $('#wxalert-dismiss').onclick=()=>{ S.wxAlert.dismissedUntil=Date.now()+3*3600e3; save(); closeWxAlert(); };
+  $('#wxalert-snoozebtn').onclick=()=>{ $('#wxalert-snooze').classList.toggle('open'); };
+  $('#wxalert-snooze-hrs').onclick=()=>{ const h=Math.max(1,+$('#wxalert-hrs').value||1); S.wxAlert.snoozedUntil=Date.now()+h*3600e3; save(); closeWxAlert(); toast('Weather alerts snoozed '+h+'h.'); };
+  $('#wxalert-snooze-days').onclick=()=>{ const d=Math.max(1,+$('#wxalert-days').value||1); S.wxAlert.snoozedUntil=Date.now()+d*24*3600e3; save(); closeWxAlert(); toast('Weather alerts snoozed '+d+'d.'); };
+}
+let _wxAlertTimer=null;
+function startWeatherAlertPolling(){
+  if(_wxAlertTimer) clearInterval(_wxAlertTimer);
+  pollWeatherAlert();
+  _wxAlertTimer=setInterval(pollWeatherAlert, 30*60e3);
 }
 
 /* ============ Anthropic AI ============ */
@@ -1155,16 +1415,20 @@ function groundContext(dateStr, targetIds, constraints){
   } else {
     // No explicit targets picked (e.g. "what should I shoot tonight") — auto-surface real
     // candidates from the full catalog instead of sending the AI nothing to recommend from.
+    // Ranked by targetScore (usable time x moon quality x FOV fit), not raw minutes — a target
+    // that's up all night but far too small/large for this rig used to still win on minutes alone.
+    // Anything under FOV_HARD_CUTOFF is dropped outright, not just deprioritized: a target that
+    // small is really a different-instrument (long-FL SCT/RASA) shot, not a soft-penalty case.
     const ranked=allTargets().map(t=>{
       const tn=targetNight(t,ev,constraints||{});
       const minutes=tn.windows.reduce((a,w)=>a+w.minutes,0);
-      return {t,tn,minutes};
-    }).filter(r=>r.minutes>0).sort((a,b)=>b.minutes-a.minutes).slice(0,18);
-    L.push(`CATALOG CANDIDATES (top ${ranked.length} of the full catalog by tonight's usable minutes — auto-selected, not a pre-committed plan; windows computed against altitude floor ${S.session.altFloor}°, custom horizon${S.horizon?' (imported)':' (none)'}, moon separation ${constraints&&constraints.moonSep?constraints.moonSep:S.session.moonSepDefault}°):`);
+      return {t,tn,minutes,fitRatio:frameFitRatio(t),score:targetScore(t,tn)};
+    }).filter(r=>r.minutes>0 && r.fitRatio>=FOV_HARD_CUTOFF).sort((a,b)=>b.score-a.score).slice(0,18);
+    L.push(`CATALOG CANDIDATES (top ${ranked.length} of the full catalog, ranked by usable time × moon quality × FOV fit for the RIG above — auto-selected, not a pre-committed plan; windows computed against altitude floor ${S.session.altFloor}°, custom horizon${S.horizon?' (imported)':' (none)'}, moon separation ${constraints&&constraints.moonSep?constraints.moonSep:S.session.moonSepDefault}°):`);
     const m=moonPos(ev.mid);
-    for(const {t,tn} of ranked){
+    for(const {t,tn,fitRatio} of ranked){
       const w=tn.windows.map(w=>`${fmtHM(w.from)}–${fmtHM(w.to)} (${fmtDur(w.minutes)}, peak ${w.peakAlt.toFixed(0)}°)`).join('; ')||'no usable window';
-      L.push(`  ${t.id} ${t.n} [${TYPE_NAMES[t.type]||t.type}, ${t.size}', palette ${t.pal}]: ${w}. Transit ${tn.transit?fmtHM(tn.transit)+' (meridian flip)':'outside dark hours'}. Moon sep ~${angSep(t.ra,t.dec,m.ra,m.dec).toFixed(0)}°.${telescopiusMetaLine(t)}`);
+      L.push(`  ${t.id} ${t.n} [${TYPE_NAMES[t.type]||t.type}, ${t.size}', palette ${t.pal}, fills ~${Math.round(Math.min(fitRatio,1)*100)}% of frame]: ${w}. Transit ${tn.transit?fmtHM(tn.transit)+' (meridian flip)':'outside dark hours'}. Moon sep ~${angSep(t.ra,t.dec,m.ra,m.dec).toFixed(0)}°.${telescopiusMetaLine(t)}`);
       const proj=S.projects.find(p=>p.targetId===t.id);
       if(proj){
         const st=projectStatus(proj);
@@ -1188,6 +1452,7 @@ Rules:
 - Be direct and terse. No filler, no over-explanation, no safety caveats about stargazing.
 - When asked for a session plan, output a markdown table with EXACTLY these columns: Target name for each filter | Filter Name | Image Window | Exposure Length | Total Images Needed | Total Time per Filter. Add a final Grand Total row. Below it, a separate Flats table listing ONLY filters used this session with panel brightness (and exposure if known).
 - Respect the user's stated constraints (horizon walls, end times, B-side targets).
+- When recommending a target (not asked-about-by-name), weigh its apparent size against the RIG's stated FOV — every candidate line already states "fills ~X% of frame". This is a wide-field refractor, not a long-focal-length SCT/RASA: never recommend a target that's a poor size match for that FOV (e.g. a small galaxy or planetary nebula that fills only a few percent of frame) as if it were a great choice for this specific rig — a target that's technically visible tonight isn't automatically well-suited to it.
 - ALWAYS refer to a filter by its exact short name from the FILTERS ground truth (e.g. "RGB Ultra", "Antlia 3nm") — never by manufacturer brand alone (e.g. never just "the Antlia filter"). The user owns multiple filters from the same manufacturer, so a bare brand name doesn't tell them which one; always name the specific filter, in the table AND in prose.`;
 }
 
@@ -1694,7 +1959,7 @@ function renderTopbar(){
 }
 function renderAll(){ renderTopbar(); const p=$('.navbtn.active').dataset.page; renderPage(p); }
 function renderPage(p){
-  ({tonight:renderTonight,planner:renderPlanner,targets:renderTargets,projects:renderProjects,lab:renderLab,advisor:renderAdvisor,equipment:renderEquipment,settings:renderSettings})[p]();
+  ({tonight:renderTonight,forecast:renderForecast,planner:renderPlanner,targets:renderTargets,projects:renderProjects,lab:renderLab,advisor:renderAdvisor,equipment:renderEquipment,settings:renderSettings})[p]();
 }
 function applyNavVisibility(){
   const btn=$('.navbtn[data-page="planner"]'); if(btn) btn.style.display=S.toggles.planner?'':'none';
@@ -1758,7 +2023,10 @@ function forecastProject(p){
 /* ============ TONIGHT page ============ */
 function renderTonight(){
   const pg=$('#page-tonight'); const ev=nightEvents(S.uiNight); const tp=tonightPlan(); const prof=profile();
-  const wxCached=S.weatherCache&&S.weatherCache.data;
+  const astroCached=S.weatherCache&&S.weatherCache.data;
+  const tempestConfigured=S.tempest.stationId&&S.tempest.token;
+  const tempestCached=S.tempestCache&&S.tempestCache.data;
+  const wxCached=astroCached||tempestCached;
   pg.innerHTML=`
   <h2>Tonight</h2>
   <div class="sub">Night of ${S.uiNight} · ${prof.name}</div>
@@ -1772,8 +2040,9 @@ function renderTonight(){
         ${S.toggles.cooldownReminder&&tp.targets.length?(()=>{ const starts=tp.targets.map(id=>{ const t=getTarget(id); if(!t)return null; const tn=targetNight(t,ev,{moonSep:tp.moonSep}); return tn.windows[0]?tn.windows[0].from:null; }).filter(Boolean); if(!starts.length) return ''; const earliest=new Date(Math.min(...starts)); const cool=new Date(earliest.getTime()-20*60e3); return `<span>❄ Start cooling by <b>${fmtHM(cool)}</b></span>`; })():''}
       </div>
       <div class="spacer" style="flex:1"></div>
-      <button class="btn small" id="wx-btn">${wxCached?'Refresh forecast':'Fetch Astrospheric'}</button>
-      <span class="dim mono" style="font-size:11px">${creditsToday()}/100 credits today${wxCached?' · cached '+new Date(S.weatherCache.fetchedAt).toLocaleTimeString([],{hour12:false}):''}</span>
+      <button class="btn small" id="wx-btn">${astroCached?'Refresh Astrospheric':'Fetch Astrospheric'}</button>
+      <span class="dim mono" style="font-size:11px">${creditsToday()}/100 credits today${astroCached?' · cached '+new Date(S.weatherCache.fetchedAt).toLocaleTimeString([],{hour12:false}):''}</span>
+      ${tempestConfigured?`<button class="btn small" id="wx-tempest-btn">${tempestCached?'Refresh Tempest':'Fetch Tempest'}</button><span class="dim mono" style="font-size:11px">${tempestCached?'cached '+new Date(S.tempestCache.fetchedAt).toLocaleTimeString([],{hour12:false}):''}</span>`:''}
     </div>
     ${wxCached?'<div id="wx-strip" style="margin-top:8px"></div>':''}
   </div>
@@ -1798,6 +2067,7 @@ function renderTonight(){
   ${S.toggles.mooncal?`<div class="card"><h3>Moon calendar</h3><div id="mooncal"></div></div>`:''}
   `;
   $('#wx-btn').onclick=async()=>{ $('#wx-btn').innerHTML='<span class="spin"></span>'; await fetchWeather(true); renderTonight(); };
+  if($('#wx-tempest-btn')) $('#wx-tempest-btn').onclick=async()=>{ $('#wx-tempest-btn').innerHTML='<span class="spin"></span>'; await fetchTempestForecast(true); renderTonight(); };
   $('#tl-add').onchange=e=>{ if(e.target.value && !tp.targets.includes(e.target.value)){ tp.targets.push(e.target.value); tp.autoFill=false; if(!S.toggles.multiTarget) tp.targets=tp.targets.slice(-2); save(); renderTonight(); } };
   $('#tl-sep').onchange=e=>{ tp.moonSep=+e.target.value||60; save(); renderTonight(); };
   $('#tl-alt').onchange=e=>{ S.session.altFloor=+e.target.value||30; save(); renderTonight(); };
@@ -1819,6 +2089,57 @@ function sortedByBest(ev){
     const tot=tn.windows.reduce((a,w)=>a+w.minutes,0);
     return {...t, _min:tot, _score:targetScore(t,tn), best: tot>0? fmtDur(tot):'—'};
   }).sort((a,b)=>b._score-a._score);
+}
+/* Worst-case value across a night's dark-hour samples for one field (most conservative reading —
+   for planning, "was there ever a bad patch overnight" matters more than an average). Fields with
+   no classify() opinion (raw temp, humidity, etc.) just return the first available reading instead,
+   since there's no better/worse direction to pick a "worst" from. */
+function worstAcrossNight(field, dateStr){
+  const ev=nightEvents(dateStr);
+  if(!ev.dusk18||!ev.dawn18) return {value:null, cls:null, time:null};
+  const rank={go:0, caution:1, nogo:2};
+  let worst=null, worstRank=-1, worstTime=null;
+  for(let t=ev.dusk18.getTime(); t<=ev.dawn18.getTime(); t+=3600e3){
+    const hr=new Date(t); const v=field.get(hr); const c=field.classify(v);
+    if(c==null){ if(worst==null && v!=null){ worst=v; worstTime=hr; } continue; }
+    if(rank[c]>worstRank){ worstRank=rank[c]; worst=v; worstTime=hr; }
+  }
+  return {value:worst, cls: worstRank>=0 ? Object.keys(rank).find(k=>rank[k]===worstRank) : null, time:worstTime};
+}
+function renderForecast(){
+  const pg=$('#page-forecast');
+  const base=new Date(S.uiNight+'T00:00:00');
+  const days=[0,1,2].map(off=>{ const d=new Date(base); d.setDate(d.getDate()+off); return d.toISOString().slice(0,10); });
+  const astroCached=S.weatherCache&&S.weatherCache.data, tempestCached=tempestHourly();
+  pg.innerHTML=`
+  <h2>3-Day Forecast</h2>
+  <div class="sub">Worst-case reading across each night's astro-dark window. Astrospheric's own forecast only reaches ~81h out, so day 3 may show Tempest only.</div>
+  <div class="row" style="margin-bottom:10px">
+    <label class="tog"><input type="checkbox" id="fc-src-astro" ${S.forecastSources.astro?'checked':''}><span class="tr"></span>Astrospheric</label>
+    <label class="tog"><input type="checkbox" id="fc-src-tempest" ${S.forecastSources.tempest?'checked':''}><span class="tr"></span>Tempest</label>
+    <span class="dim" style="font-size:11px">Field selection lives in Settings → 3-Day Forecast fields.</span>
+  </div>
+  <div class="fcgrid" id="fc-grid"></div>`;
+  $('#fc-src-astro').onchange=e=>{ S.forecastSources.astro=e.target.checked; save(); renderForecast(); };
+  $('#fc-src-tempest').onchange=e=>{ S.forecastSources.tempest=e.target.checked; save(); renderForecast(); };
+  const grid=$('#fc-grid');
+  grid.innerHTML=days.map(ds=>{
+    const ev=nightEvents(ds);
+    let h=`<div class="fcday"><h4>${ds}${ds===S.uiNight?' (tonight)':''}</h4>`;
+    if(!ev.dusk18||!ev.dawn18){ h+='<div class="fieldnote">No astro-dark window computed for this date.</div></div>'; return h; }
+    if(S.forecastSources.astro){
+      const fields=ASTRO_FIELDS.filter(f=>S.weatherFields.forecast.astro[f.key]);
+      const rows=astroCached ? fields.map(f=>{ const w=worstAcrossNight(f,ds); const txt=f.fmt(w.value); if(txt==null) return ''; const col=w.cls==='go'?'var(--sky-go)':w.cls==='caution'?'var(--sky-caution)':w.cls==='nogo'?'var(--sky-nogo)':'var(--dim)'; return `<div class="fcrow"><span class="k">${f.label}</span><span style="color:${col}">${txt}</span></div>`; }).join('') : '<div class="fieldnote">No Astrospheric forecast cached — fetch it from Tonight.</div>';
+      h+=`<div class="fcsrc"><h5>Astrospheric</h5>${rows||'<div class="fieldnote">No enabled fields have data for this night.</div>'}</div>`;
+    }
+    if(S.forecastSources.tempest){
+      const fields=TEMPEST_FIELDS.filter(f=>S.weatherFields.forecast.tempest[f.key]);
+      const rows=tempestCached ? fields.map(f=>{ const w=worstAcrossNight(f,ds); const txt=f.fmt(w.value); if(txt==null) return ''; const col=w.cls==='go'?'var(--sky-go)':w.cls==='caution'?'var(--sky-caution)':w.cls==='nogo'?'var(--sky-nogo)':'var(--dim)'; return `<div class="fcrow"><span class="k">${f.label}</span><span style="color:${col}">${txt}</span></div>`; }).join('') : (S.tempest.stationId&&S.tempest.token ? '<div class="fieldnote">No Tempest forecast cached — fetch it from Tonight.</div>' : '<div class="fieldnote">Add your Tempest station ID + token in Settings.</div>');
+      h+=`<div class="fcsrc"><h5>Tempest</h5>${rows||'<div class="fieldnote">No enabled fields have data for this night.</div>'}</div>`;
+    }
+    h+='</div>';
+    return h;
+  }).join('');
 }
 function drawTimeline(ev,tp,dateStr,containerId){
   dateStr=dateStr||S.uiNight;
@@ -1908,22 +2229,37 @@ function drawAltitudeChart(ev,tp,dateStr,containerId){
   s+=`<line x1="${PL}" y1="${floorY}" x2="${W-PR}" y2="${floorY}" stroke="var(--warn)" stroke-width="1" stroke-dasharray="4,3" opacity=".7"/>`;
   s+=`<text x="${W-PR+6}" y="${floorY+4}" fill="var(--warn)" font-size="10" font-family="var(--mono)">floor</text>`;
   // astro-dark shading + hour ticks
-  if(ev.dusk18&&ev.dawn18) s+=`<rect x="${X(ev.dusk18)}" y="${PT}" width="${X(ev.dawn18)-X(ev.dusk18)}" height="${H-PT-PB}" fill="rgba(232,184,75,.04)" stroke="var(--amber)" stroke-width="1" opacity=".4"/>`;
+  if(ev.dusk18&&ev.dawn18){
+    s+=`<rect x="${X(ev.dusk18)}" y="${PT}" width="${X(ev.dawn18)-X(ev.dusk18)}" height="${H-PT-PB}" fill="rgba(232,184,75,.04)" stroke="var(--amber)" stroke-width="1" opacity=".4"/>`;
+    s+=`<text x="${X(ev.dusk18).toFixed(1)}" y="${PT-3}" fill="var(--amber)" font-size="9" text-anchor="start" font-family="var(--mono)" opacity=".75">dusk ${fmtHM(ev.dusk18)}</text>`;
+    s+=`<text x="${X(ev.dawn18).toFixed(1)}" y="${PT-3}" fill="var(--amber)" font-size="9" text-anchor="end" font-family="var(--mono)" opacity=".75">dawn ${fmtHM(ev.dawn18)}</text>`;
+  }
   const tick=new Date(t0); tick.setMinutes(0,0,0); tick.setHours(tick.getHours()+1);
   for(let t=tick.getTime(); t<t1.getTime(); t+=3600e3){
     const x=X(new Date(t));
     s+=`<line x1="${x}" y1="${PT}" x2="${x}" y2="${H-PB}" stroke="var(--line)" stroke-width="1" opacity=".5"/>`;
     s+=`<text x="${x}" y="${H-8}" fill="var(--dim)" font-size="10" text-anchor="middle" font-family="var(--mono)">${new Date(t).getHours()}:00</text>`;
   }
+  // "now" marker — only meaningful when viewing a night that actually contains the current moment
+  const now=new Date();
+  if(now>=t0 && now<=t1){
+    const nx=X(now);
+    s+=`<line x1="${nx.toFixed(1)}" y1="${PT}" x2="${nx.toFixed(1)}" y2="${H-PB}" stroke="#fff" stroke-width="1.5" opacity=".6"/>`;
+    s+=`<text x="${nx.toFixed(1)}" y="${PT+10}" fill="#fff" font-size="9" text-anchor="middle" font-family="var(--mono)" opacity=".85">now</text>`;
+  }
   // moon altitude — dashed white/gray line
   const moonPts=[]; for(let tt=t0.getTime(); tt<=t1.getTime(); tt+=10*60e3){ const d=new Date(tt); const m=moonPos(d); moonPts.push([X(d),Y(Math.max(0,m.alt))]); }
   s+=`<path d="M ${moonPts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ')}" fill="none" stroke="#D8DEE9" stroke-width="1.5" stroke-dasharray="5,3" opacity=".55"/>`;
-  s+=`<text x="${W-PR+6}" y="${PT+10}" fill="#D8DEE9" font-size="10" font-family="var(--mono)" opacity=".8">moon</text>`;
+  s+=`<text x="${W-PR+6}" y="${PT+10}" fill="#D8DEE9" font-size="10" font-family="var(--mono)" opacity=".8">moon ${(ev.moonIllum*100).toFixed(0)}%</text>`;
   // one line per target, using its own real computed samples — no new math, just visualizing what already exists
   tp.targets.forEach((id,i)=>{
     const t=getTarget(id); if(!t) return;
     const tn=targetNight(t,ev,{moonSep:tp.moonSep});
     const col=palette[i%palette.length];
+    // real horizon profile for THIS target's actual azimuth sweep tonight — not just the flat floor
+    // line above. Matches exactly what targetNight uses to decide usable windows (horizonAlt(az)+offset).
+    const hzPts=tn.samples.map(smp=>[X(smp.t),Y(Math.max(0,horizonAlt(smp.az)+S.session.horizonOffset))]);
+    if(hzPts.length) s+=`<path d="M ${hzPts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ')}" fill="none" stroke="#8a6a4a" stroke-width="1" stroke-dasharray="2,3" opacity=".6"/>`;
     const pts=tn.samples.map(smp=>[X(smp.t),Y(Math.max(0,smp.alt))]);
     if(pts.length) s+=`<path d="M ${pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ')}" fill="none" stroke="${col}" stroke-width="2"/>`;
     // highlight the usable (above-floor, moon-clear) portion more boldly
@@ -1936,53 +2272,55 @@ function drawAltitudeChart(ev,tp,dateStr,containerId){
       if(fromSmp){ const px_=X(w.from), py_=Y(Math.max(0,fromSmp.alt)); s+=`<circle cx="${px_.toFixed(1)}" cy="${py_.toFixed(1)}" r="3" fill="${col}"/><text x="${px_.toFixed(1)}" y="${(py_-8).toFixed(1)}" fill="${col}" font-size="9" text-anchor="middle" font-family="var(--mono)">↑${fmtHM(w.from)}</text>`; }
       if(toSmp){ const px_=X(w.to), py_=Y(Math.max(0,toSmp.alt)); s+=`<circle cx="${px_.toFixed(1)}" cy="${py_.toFixed(1)}" r="3" fill="${col}"/><text x="${px_.toFixed(1)}" y="${(py_-8).toFixed(1)}" fill="${col}" font-size="9" text-anchor="middle" font-family="var(--mono)">${fmtHM(w.to)}↓</text>`; }
     });
+    // meridian flip marker — transit time was already computed, just never drawn before
+    if(tn.transit && tn.transit>=t0 && tn.transit<=t1){
+      const fx=X(tn.transit);
+      s+=`<line x1="${fx.toFixed(1)}" y1="${PT}" x2="${fx.toFixed(1)}" y2="${H-PB}" stroke="${col}" stroke-width="1" stroke-dasharray="1,3" opacity=".7"/>`;
+      s+=`<text x="${fx.toFixed(1)}" y="${H-PB+11}" fill="${col}" font-size="8" text-anchor="middle" font-family="var(--mono)">⚡flip</text>`;
+    }
     s+=`<text x="${W-PR+6}" y="${PT+26+i*16}" fill="${col}" font-size="11" font-family="var(--mono)">${esc(t.id)}</text>`;
   });
   s+='</svg>';
-  wrap.innerHTML=`<h3 style="margin-bottom:6px">Altitude tonight</h3>`+s+`<div class="fieldnote">Bold segments = actually usable (above altitude floor, clear of the moon). ↑ = rises into usable range, ↓ = drops out. Dashed white line = moon.</div>`;
+  wrap.innerHTML=`<h3 style="margin-bottom:6px">Altitude tonight</h3>`+s+`<div class="fieldnote">Bold segments = actually usable (above altitude floor, clear of the moon, and clear of your imported horizon). ↑ = rises into usable range, ↓ = drops out. ⚡flip = meridian flip. Dashed white = moon. Dashed brown = your real horizon profile at that target's azimuth (flat if no .hrz imported).</div>`;
 }
 /* Clear-Sky-Chart-style meteogram — cloud/transparency/seeing/dew as separate rows rather than one
    blended number. All this data was already being fetched from Astrospheric; it just had nowhere to go. */
+/* Renders one field-registry-driven hourly strip (used for both the Astrospheric and Tempest
+   reports on Tonight). classify() decides cell color from the dedicated --sky-go/caution/nogo
+   palette; fields with no classify opinion (e.g. raw temp) render as neutral panel-colored cells. */
+function drawWxRows(fields, toggleSet, hours){
+  const present=fields.filter(f=>toggleSet[f.key] && (f.get(hours[0])!=null||f.get(hours[Math.floor(hours.length/2)])!=null));
+  if(!present.length) return null;
+  let h='<table style="border-collapse:collapse"><tbody>';
+  for(const f of present){
+    h+=`<tr><td class="mono dim" style="font-size:10px;padding-right:6px;white-space:nowrap">${f.label}</td>`;
+    for(const hr of hours){
+      const v=f.get(hr); const cls=f.classify(v); const txt=f.fmt(v);
+      const col = cls==='go'?'var(--sky-go)':cls==='caution'?'var(--sky-caution)':cls==='nogo'?'var(--sky-nogo)':v!=null?'var(--panel3)':'var(--panel3)';
+      h+=`<td style="width:18px;height:16px;background:${col};border:1px solid var(--bg)" title="${f.label} ${fmtHM(hr)}: ${txt||'no data'}"></td>`;
+    }
+    h+='</tr>';
+  }
+  h+='</tbody></table>';
+  return h;
+}
 function drawWeatherStrip(ev){
   const el=$('#wx-strip'); if(!el) return;
   if(!ev.sunset||!ev.sunrise){ el.innerHTML=''; return; }
   const t0=new Date(ev.sunset.getTime()-45*60e3), t1=new Date(ev.sunrise.getTime()+45*60e3);
-  const rows=[
-    {key:'cloud', label:'Cloud', unit:'%', good:v=>v<20, bad:v=>v>60},
-    {key:'transparency', label:'Transp.', unit:'', good:v=>v>=4, bad:v=>v<=2},
-    {key:'seeing', label:'Seeing', unit:'', good:v=>v>=4, bad:v=>v<=2},
-  ];
-  const present=rows.filter(r=>seriesAt(r.key,ev.mid)!=null || seriesAt(r.key,t0)!=null);
-  if(!present.length){ el.innerHTML='<div class="fieldnote">Forecast fetched, but no hourly cloud/transparency/seeing series recognized in the response.</div>'; return; }
-  const cellW=18, rowH=16, PL=64;
   const hours=[]; for(let t=t0.getTime(); t<t1.getTime(); t+=3600e3) hours.push(new Date(t));
-  let h='<div style="overflow-x:auto"><table style="border-collapse:collapse"><tbody>';
-  for(const r of present){
-    h+=`<tr><td class="mono dim" style="font-size:10px;padding-right:6px;white-space:nowrap">${r.label}</td>`;
-    for(const hr of hours){
-      let v=seriesAt(r.key,hr);
-      let col='var(--panel3)', txt='';
-      if(v!=null){
-        if(r.key==='cloud'){ if(v<=1) v*=100; txt=Math.round(v)+'%'; col = v<20?'var(--good)':v<60?'var(--warn)':'var(--bad)'; }
-        else { txt=(+v).toFixed(1); col = r.good(v)?'var(--good)':r.bad(v)?'var(--bad)':'var(--warn)'; }
-      }
-      h+=`<td style="width:${cellW}px;height:${rowH}px;background:${col};border:1px solid var(--bg)" title="${r.label} ${fmtHM(hr)}: ${txt||'no data'}"></td>`;
-    }
-    h+='</tr>';
-  }
-  // dew risk row, computed rather than fetched directly
-  const dewRow=hours.map(hr=>dewRiskAt(hr));
-  if(dewRow.some(d=>d!=null)){
-    h+=`<tr><td class="mono dim" style="font-size:10px;padding-right:6px;white-space:nowrap">Dew risk</td>`;
-    dewRow.forEach((d,i)=>{
-      const col = d==null?'var(--panel3)':d.risk?'var(--bad)':'var(--good)';
-      h+=`<td style="width:${cellW}px;height:${rowH}px;background:${col};border:1px solid var(--bg)" title="${fmtHM(hours[i])}: ${d?d.spread.toFixed(1)+'° spread':'no data'}"></td>`;
-    });
-    h+='</tr>';
-  }
-  h+='</tbody></table></div>';
-  h+=`<div class="fieldnote">Cloud/transparency/seeing from Astrospheric · dew risk computed from temp/dew-point spread (rule of thumb: risk when spread narrows below ~3-5°). Hover a cell for the exact hour.</div>`;
-  el.innerHTML=h;
+  let out='';
+  const astroHtml = S.weatherCache&&S.weatherCache.data ? drawWxRows(ASTRO_FIELDS, S.weatherFields.tonight.astro, hours) : null;
+  const tempestHtml = tempestHourly() ? drawWxRows(TEMPEST_FIELDS, S.weatherFields.tonight.tempest, hours) : null;
+  if(astroHtml) out += `<div class="fieldnote" style="margin-bottom:2px"><b style="color:var(--text)">Astrospheric</b></div><div style="overflow-x:auto">${astroHtml}</div>`;
+  else out += `<div class="fieldnote">No Astrospheric forecast cached yet, or no enabled fields recognized in the response.</div>`;
+  if(tempestHtml) out += `<div class="fieldnote" style="margin:8px 0 2px"><b style="color:var(--text)">Tempest</b></div><div style="overflow-x:auto">${tempestHtml}</div>`;
+  else if(S.tempest.stationId && S.tempest.token) out += `<div class="fieldnote" style="margin-top:6px">No Tempest forecast cached yet, or no enabled fields recognized in the response.</div>`;
+  out += `<div class="fieldnote" style="margin-top:6px"><span class="skychip"><span class="dot" style="background:var(--sky-go)"></span>go</span> &nbsp;
+    <span class="skychip"><span class="dot" style="background:var(--sky-caution)"></span>caution</span> &nbsp;
+    <span class="skychip"><span class="dot" style="background:var(--sky-nogo)"></span>no-go</span> &nbsp;
+    <span class="skychip"><span class="dot" style="background:var(--panel3)"></span>informational / no data</span> &middot; smoke/aerosols are already folded into Transparency, not a separate row &middot; hover a cell for the exact hour &middot; edit which fields show in Settings</div>`;
+  el.innerHTML=out;
 }
 /* Pre-session checklist — common hobby practice (one missed step, like a dew heater, can cost a whole
    night). Persisted per-date so it naturally starts fresh each session; items are user-editable. */
@@ -2358,7 +2696,7 @@ function renderTargets(){
     ${S.toggles.telescopiusApi&&S.telescopiusProxyUrl?'<button class="btn small" id="tg-tel-live">Telescopius: lists & search</button>':''}
     <button class="btn small" id="tg-seasonal">Seasonal overview</button>
   </div></div>
-  <div class="card"><table id="tg-table"><thead><tr>${S.toggles.targetThumbs?'<th></th>':''}<th>ID</th><th>Name</th><th>Type</th><th>Size</th><th>RA / Dec</th><th>Palette</th><th>Tonight</th><th>Peak alt</th><th></th></tr></thead><tbody></tbody></table></div>`;
+  <div class="card"><table id="tg-table"><thead><tr>${S.toggles.targetThumbs?'<th></th>':''}<th>ID</th><th>Name</th><th>Type</th><th>Size</th><th>Fit</th><th>RA / Dec</th><th>Palette</th><th>Tonight</th><th>Peak alt</th><th></th></tr></thead><tbody></tbody></table></div>`;
   const draw=()=>{
     const q=($('#tg-q').value||'').toLowerCase(); const ty=$('#tg-type').value;
     const rows=allTargets().filter(t=>(!q||t.id.toLowerCase().includes(q)||t.n.toLowerCase().includes(q))&&(!ty||t.type===ty))
@@ -2367,15 +2705,22 @@ function renderTargets(){
         const clear=targetEverClearsHorizon(t);
         return {t,min,peak,clear}; })
       .sort((a,b)=>b.min-a.min);
-    $('#tg-table tbody').innerHTML=rows.map(({t,min,peak,clear})=>`<tr${clear.clears?'':' style="opacity:.45"'}>
+    $('#tg-table tbody').innerHTML=rows.map(({t,min,peak,clear})=>{
+      const fitRatio=frameFitRatio(t,prof);
+      const fitPct=Math.round(Math.min(fitRatio,1)*100);
+      const fitCls = fitRatio<FOV_HARD_CUTOFF ? 'bad' : (fitRatio<0.05||fitRatio>1.3) ? 'wn' : 'ok';
+      const fitTitle = fitRatio<FOV_HARD_CUTOFF ? 'Fills only '+fitPct+'% of frame — too small for this rig, really a long-focal-length (SCT/RASA) target' : fitRatio>1.3 ? "Larger than the frame — won't fully fit without a mosaic" : fitPct+'% of frame';
+      return `<tr${clear.clears?'':' style="opacity:.45"'}>
       ${S.toggles.targetThumbs?`<td style="cursor:pointer" onclick="framingModal('${esc(t.id)}')"><img loading="lazy" src="${targetImageUrl(t)}" width="34" height="34" style="border-radius:4px;object-fit:cover;vertical-align:middle" onerror="this.style.display='none'"></td>`:''}
       <td><b style="${S.toggles.targetThumbs?'cursor:pointer':''}" ${S.toggles.targetThumbs?`onclick="framingModal('${esc(t.id)}')"`:''}>${esc(t.id)}</b>${clear.clears?'':` <span class="badge bad" title="Best possible altitude here is only ${clear.bestAlt.toFixed(0)}°, limited by your ${clear.limitedBy} — this target structurally can't be usefully imaged from your location, not just tonight">never clears</span>`}</td><td class="sans">${esc(t.n)}${t.custom?' <span class="badge nt">custom</span>':''}</td>
       <td class="sans dim">${TYPE_NAMES[t.type]||t.type}</td><td>${t.size}′</td>
+      <td><span class="badge ${fitCls}" title="${esc(fitTitle)}">${fitPct}%</span></td>
       <td class="dim">${fmtRA(t.ra)} ${fmtDec(t.dec)}</td><td class="dim">${esc(t.pal)}</td>
       <td class="${min>120?'good':min>0?'warn':'faint'}">${min?fmtDur(min):'—'}</td><td>${peak?peak.toFixed(0)+'°':'—'}</td>
       <td class="right"><button class="btn small" onclick="addTonight('${esc(t.id)}');toast('${esc(t.id)} added to tonight')">tonight</button>
       ${S.toggles.telescopiusLinks?`<button class="btn small" onclick="openTelescopiusLink(getTarget('${esc(t.id)}'))" style="text-decoration:none">↗</button>`:''}
-      ${t.custom?`<button class="btn small danger" onclick="delCustom('${esc(t.id)}')">✕</button>`:''}</td></tr>`).join('');
+      ${t.custom?`<button class="btn small danger" onclick="delCustom('${esc(t.id)}')">✕</button>`:''}</td></tr>`;
+    }).join('');
   };
   $('#tg-q').oninput=draw; $('#tg-type').onchange=draw;
   $('#tg-addcustom').onclick=()=>customTargetDialog();
@@ -3050,6 +3395,12 @@ function renderEquipment(){
 }
 
 /* ============ SETTINGS page ============ */
+function fieldPickerGroup(title, fields, stateObj, tab, src){
+  return `<div style="margin-bottom:10px"><div class="fieldnote" style="margin-bottom:4px"><b style="color:var(--text)">${esc(title)}</b></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px">
+  ${fields.map(f=>`<label class="tog"><input type="checkbox" data-fieldtog="${tab}|${src}|${f.key}" ${stateObj[f.key]?'checked':''}><span class="tr"></span>${esc(f.label)}</label>`).join('')}
+  </div></div>`;
+}
 function renderSettings(){
   const pg=$('#page-settings'); const L=S.location; const ses=S.session;
   const togNames={ninaExport:'NINA sequence export',ninaImport:'NINA autosave import',bside:'B-side suggestions',mooncal:'Moon calendar',flipMarkers:'Meridian flip markers',backup:'Backup/restore',snrPanel:'SNR panel',bestNights:'Best-nights finder',gapWarnings:'Dark-library gap warnings',multiTarget:'Multi-target nights',nightSheet:'Night sheet export',telescopiusLinks:'Telescopius links',telescopiusApi:'Telescopius live lists & search (via proxy)',targetThumbs:'Target thumbnails & framing preview',planner:'Planner tab (future nights)',imageQuality:'Image-quality summary (HFR from filenames)',aiReviewOnImport:'Auto AI-review on NINA import',autoBackupOnLoad:'Auto-backup to folder on load',ninaDashboard:'NINA live status dashboard',ninaLiveSync:'NINA live sub-count sync (experimental)',ninaPush:'Push sequences live to NINA (falls back to file)',altitudeChart:'Altitude-vs-time chart (Tonight/Planner)',hfrChart:'HFR trend chart (Projects, needs image scan)',satelliteRisk:'Satellite-trail twilight risk note',cooldownReminder:'Camera cooldown start reminder',sessionChecklist:'Pre-session checklist',visitDigest:'"Since you last visited" digest'};
@@ -3103,6 +3454,16 @@ function renderSettings(){
     <label class="f">Telescopius proxy URL (Cloudflare Worker)</label>
     <div class="row"><input type="text" id="st-tel" value="${esc(S.telescopiusProxyUrl)}" placeholder="https://telescopius-proxy.<you>.workers.dev" style="flex:1"><button class="btn small" id="st-teltest">Test</button></div>
     <div class="fieldnote" id="st-telstatus">The API key lives only in the Worker's encrypted secret now — this app never sees or stores it. Test hits the free quote-of-the-day endpoint. Powers live target lists/search alongside the existing CSV import + deep links.</div>
+    <h3 style="margin-top:14px">Tempest weather station</h3>
+    <div class="row"><div style="flex:1"><label class="f">Station ID</label><input type="text" id="st-tempest-station" value="${esc(S.tempest.stationId)}" placeholder="e.g. 84253"></div>
+    <div style="flex:2"><label class="f">API token</label><input type="password" id="st-tempest-token" value="${esc(S.tempest.token)}" placeholder="paste your Tempest personal access token"></div>
+    <button class="btn small" id="st-tempesttest" style="align-self:flex-end;margin-bottom:1px">Test</button></div>
+    <div class="fieldnote" id="st-tempeststatus">Both stored only in this browser's localStorage, same as your other keys. Powers the second weather report on Tonight, the 3-Day Forecast tab, and the rain/gust alert (Astrospheric can't feed the alert — its API has no precipitation or gust field).</div>
+    <h3 style="margin-top:14px">Weather alert (rain / damaging gust, next 6h)</h3>
+    <label class="tog"><input type="checkbox" id="st-wxalert-on" ${S.wxAlert.enabled?'checked':''}><span class="tr"></span>Enabled</label>
+    <div class="row" style="margin-top:6px"><div><label class="f">Rain chance threshold (%)</label><input type="number" id="st-wxalert-rain" class="short" value="${S.wxAlert.rainProbPct}"></div>
+    <div><label class="f">Gust threshold (mph)</label><input type="number" id="st-wxalert-gust" class="short" value="${S.wxAlert.gustMph}"></div></div>
+    <div class="fieldnote">Checked every 30 min against your Tempest forecast, while the app is open in a tab. This is <b>not</b> a phone push notification — that's deliberately deferred (bring it up when you're ready to design it).</div>
     <h3 style="margin-top:14px">NINA Advanced API</h3>
     <label class="f">API base URL (host:port of the Advanced API plugin)</label>
     <div class="row"><input type="text" id="st-nina" value="${esc(S.nina.url)}" placeholder="http://localhost:1888" style="flex:1">
@@ -3117,6 +3478,13 @@ function renderSettings(){
     <button class="btn small" id="st-imp">Restore backup</button><input type="file" id="st-impfile" accept=".json" style="display:none">
     <button class="btn small danger" id="st-reset">Factory reset</button></div>`:''}
   </div>
+  <div class="card"><h3>Weather fields</h3>
+    <div class="fieldnote" style="margin-bottom:10px">Which fields render on Tonight vs. the 3-Day Forecast tab — independently per source.</div>
+    ${fieldPickerGroup('Tonight — Astrospheric', ASTRO_FIELDS, S.weatherFields.tonight.astro, 'tonight', 'astro')}
+    ${fieldPickerGroup('Tonight — Tempest', TEMPEST_FIELDS, S.weatherFields.tonight.tempest, 'tonight', 'tempest')}
+    ${fieldPickerGroup('3-Day Forecast — Astrospheric', ASTRO_FIELDS, S.weatherFields.forecast.astro, 'forecast', 'astro')}
+    ${fieldPickerGroup('3-Day Forecast — Tempest', TEMPEST_FIELDS, S.weatherFields.forecast.tempest, 'forecast', 'tempest')}
+  </div>
   <div class="row" style="margin-top:4px"><button class="btn primary" id="st-save">Save settings</button></div>`;
   $('#st-save').onclick=()=>{
     L.lat=+$('#st-lat').value; L.lon=+$('#st-lon').value; L.elev=+$('#st-elev').value;
@@ -3125,11 +3493,16 @@ function renderSettings(){
     ses.flipCostMin=+$('#st-flip').value||0; ses.nauticalBroadband=$('#st-naut').checked;
     S.keys.anthropic=$('#st-anth').value.trim(); S.keys.astrospheric=$('#st-astro').value.trim();
     S.telescopiusProxyUrl=$('#st-tel').value.trim();
+    const newTempestStation=$('#st-tempest-station').value.trim(), newTempestToken=$('#st-tempest-token').value.trim();
+    if(newTempestStation!==S.tempest.stationId || newTempestToken!==S.tempest.token) S.tempest.confirmed=false;
+    S.tempest.stationId=newTempestStation; S.tempest.token=newTempestToken;
+    S.wxAlert.enabled=$('#st-wxalert-on').checked;
+    S.wxAlert.rainProbPct=+$('#st-wxalert-rain').value||40; S.wxAlert.gustMph=+$('#st-wxalert-gust').value||35;
     const newNinaUrl=normalizeNinaUrl($('#st-nina').value);
     if(newNinaUrl!==S.nina.url) S.nina.confirmed=false;
     S.nina.url=newNinaUrl;
     S.exportMode=$('#st-exportmode').value;
-    save(); toast('Settings saved.'); renderAll();
+    save(); toast('Settings saved.'); renderAll(); startWeatherAlertPolling();
   };
   $('#st-ninatest').onclick=async()=>{
     const url=normalizeNinaUrl($('#st-nina').value);
@@ -3200,6 +3573,28 @@ function renderSettings(){
       st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> Check the Worker URL, that it\u2019s deployed with the real proxy code (not the default Hello World template), and that TELESCOPIUS_API_KEY is set as a Secret in its settings.';
     }
   };
+  $('#st-tempesttest').onclick=async()=>{
+    const stationId=$('#st-tempest-station').value.trim(), token=$('#st-tempest-token').value.trim();
+    const st=$('#st-tempeststatus');
+    if(!stationId||!token){ st.innerHTML='<span class="bad">Station ID and token are both required.</span>'; return; }
+    const prev={stationId:S.tempest.stationId, token:S.tempest.token};
+    S.tempest.stationId=stationId; S.tempest.token=token;
+    st.innerHTML='<span class="spin"></span> testing…';
+    try{
+      const data=await fetchTempestForecast(true);
+      if(!data) throw new Error('No data returned');
+      S.tempest.confirmed=true; save();
+      st.innerHTML='<span class="good">✓ Connected.</span> <span class="mono" style="font-size:11px">'+esc(JSON.stringify(data).slice(0,140))+'…</span>';
+      startWeatherAlertPolling();
+    }catch(e){
+      S.tempest.stationId=prev.stationId; S.tempest.token=prev.token; S.tempest.confirmed=false;
+      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> Double-check the station ID and token. If this is a CORS error, WeatherFlow\u2019s API may need a proxy Worker — tell Claude and we\u2019ll add one, same pattern as Telescopius.';
+    }
+  };
+  $$('#page-settings [data-fieldtog]').forEach(cb=>cb.onchange=()=>{
+    const [tab,src,key]=cb.dataset.fieldtog.split('|');
+    S.weatherFields[tab][src][key]=cb.checked; save();
+  });
   $$('[data-pick]').forEach(b=>b.onclick=async()=>{ await pickFolder(b.dataset.pick); renderSettings(); });
   $('#st-nina-loc').onclick=async()=>{
     const st=$('#st-nina-loc-status');
@@ -3240,6 +3635,7 @@ function renderSettings(){
 window.addEventListener('DOMContentLoaded',()=>{
   try{
     initShell(); applyNavVisibility(); renderTopbar(); renderTonight();
+    initWxAlert(); startWeatherAlertPolling();
     if(S.toggles.autoBackupOnLoad) autoBackupSilent();
   }
   catch(e){ document.body.innerHTML='<div style="padding:40px;font-family:monospace;color:#E05A4E">Boot failed: '+esc(e.message)+'<br><br>'+esc(e.stack||'')+'</div>'; }
