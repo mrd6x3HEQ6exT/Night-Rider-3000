@@ -535,7 +535,7 @@ if(typeof structuredClone==='undefined'){
   window.structuredClone=o=>JSON.parse(JSON.stringify(o)); // every use in this app is plain JSON-safe state
 }
 const A = Astronomy; // embedded astronomy-engine
-const BUILD_ID = '2026-07-18 9:20 AM MST';
+const BUILD_ID = '2026-07-18 11:10 AM MST';
 
 /* Curated DSO catalog for the app's rig(s). Real FOV varies by active profile (e.g. mono/ASI2600MM
    ~3.0°×2.0°, OSC/ASI6200MC ~4.6°×3.1° — see fovDeg()); one target (Rho Oph, 240') exceeds the
@@ -703,7 +703,7 @@ const DEFAULT_STATE = {
   nina:{url:'http://localhost:1888', confirmed:false},
   ai:{model:'claude-haiku-4-5-20251001', citeNorms:true, autoModel:true},
   toggles:{ninaExport:true, ninaImport:true, bside:true, mooncal:true, flipMarkers:true, backup:true, snrPanel:true, bestNights:true, gapWarnings:true, multiTarget:true, nightSheet:true, telescopiusLinks:true, telescopiusApi:false, targetThumbs:true, planner:true, imageQuality:true, aiReviewOnImport:false, autoBackupOnLoad:false, ninaDashboard:true, ninaLiveSync:false, ninaPush:true, altitudeChart:true, hfrChart:true, satelliteRisk:true, cooldownReminder:true, sessionChecklist:true, visitDigest:true, tonightPicks:true},
-  weatherCache:null, // {fetchedAt, dateKey, data, creditsUsedToday, creditsDate} — Astrospheric only; stays on its own ~3h cache (100 credits/day cap)
+  weatherCache:null, // {fetchedAt, data, creditsRemaining} — Astrospheric v2; 3h cache, 29,900 credits/month pool (server-reported, not hand-tracked)
   tempest:{stationId:'84253', token:'', confirmed:false},
   tempestCache:null, // {fetchedAt, data} — refreshed on the 30-min poll, not credit-limited like Astrospheric
   // Which fields render on Tonight vs the 3-Day Forecast tab, independently per source.
@@ -772,6 +772,14 @@ function toast(msg, err){
 }
 function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtHM(d){ return d ? d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hour12:false}) : '—'; }
+/* YYYY-MM-DD from a Date's LOCAL year/month/day — never toISOString().slice(0,10), which converts
+   to UTC first and silently rolls the date forward for any local time past 5pm in a negative-offset
+   zone like MST. This was a real, user-visible bug (dates going stale/wrong in the evening — exactly
+   when this app is used). One canonical helper instead of the same mistake in nine separate places. */
+function localDateStr(d){
+  d=d||new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 function fmtDur(min){ if(min==null||isNaN(min)) return '—'; const h=Math.floor(min/60), m=Math.round(min%60); return (h?h+'h ':'')+(m||!h?m+'m':''); }
 function fmtRA(ra){ const h=Math.floor(ra), m=(ra-h)*60; return h+'h '+m.toFixed(1)+'m'; }
 function fmtDec(d){ const s=d<0?'−':'+'; d=Math.abs(d); return s+Math.floor(d)+'° '+Math.round((d-Math.floor(d))*60)+"′"; }
@@ -923,7 +931,7 @@ function scanSeasonalGrid(){
   const rows=targets.map(t=>{
     const months=[];
     for(let m=0;m<12;m++){
-      const ds=new Date(year,m,15,12).toISOString().slice(0,10);
+      const ds=localDateStr(new Date(year,m,15,12));
       const ev=nightEvents(ds);
       const tn=targetNight(t,ev,{moonSep:S.session.moonSepDefault});
       months.push(tn.windows.reduce((a,w)=>a+w.minutes,0));
@@ -938,7 +946,7 @@ function scanFullYear(t, moonSep){
   const start=new Date(); start.setHours(12,0,0,0);
   const days=[];
   for(let i=0;i<365;i++){
-    const ds=new Date(start.getTime()+i*86400e3).toISOString().slice(0,10);
+    const ds=localDateStr(new Date(start.getTime()+i*86400e3));
     const ev=nightEvents(ds);
     const tn=targetNight(t,ev,{moonSep:moonSep??S.session.moonSepDefault});
     const usable=tn.windows.reduce((a,w)=>a+w.minutes,0);
@@ -1171,25 +1179,28 @@ function targetImageUrl(t, fovDeg, px){
   return `https://alasky.u-strasbg.fr/hips-image-services/hips2fits?hips=CDS%2FP%2FDSS2%2Fcolor&width=${px}&height=${px}&fov=${fovDeg.toFixed(3)}&projection=TAN&coordsys=icrs&ra=${(t.ra*15).toFixed(5)}&dec=${t.dec.toFixed(5)}`;
 }
 /* ============ Astrospheric ============ */
-const ASTRO_URL='https://astrosphericpublicaccess.azurewebsites.net/api/GetForecastData_V1';
-function creditsToday(){
-  const c=S.weatherCache; const today=new Date().toDateString();
-  return (c && c.creditsDate===today) ? (c.creditsUsedToday||0) : 0;
+const ASTRO_VARIABLES=['Cloud','Transparency','Seeing','Temperature','DewPoint','Wind']; // WindDirection omitted — not currently used, and cost is per-variable
+const ASTRO_URL='https://v2-api-public.astrospheric.com/api/GetForecastData';
+/* Astrospheric moved to a monthly credit pool (29,900/mo) — the API's own APICreditsRemainingToday
+   field (yes, still named "Today" in v2's docs despite billing monthly) is authoritative; no more
+   hand-tracking a daily counter client-side. */
+function astroCreditsRemaining(){
+  const c=S.weatherCache;
+  return (c && c.creditsRemaining!=null) ? c.creditsRemaining : null;
 }
 async function fetchWeather(force){
   if(!S.keys.astrospheric){ toast('Add your Astrospheric API key in Settings first.', true); return null; }
   const c=S.weatherCache;
   if(!force && c && c.data && (Date.now()-c.fetchedAt) < 3*3600e3) return c.data;
   try{
-    const res=await fetch(ASTRO_URL,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({Latitude:S.location.lat, Longitude:S.location.lon, APIKey:S.keys.astrospheric, MSSinceEpoch:Date.now()})});
+    const res=await fetchWithTimeout(ASTRO_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({APIKey:S.keys.astrospheric, Latitude:S.location.lat, Longitude:S.location.lon, Variables:ASTRO_VARIABLES})}, 15000);
     if(!res.ok) throw new Error('HTTP '+res.status+' '+res.statusText);
     const data=await res.json();
-    const today=new Date().toDateString();
-    const used=(c&&c.creditsDate===today?c.creditsUsedToday||0:0)+5;
-    S.weatherCache={fetchedAt:Date.now(), data, creditsUsedToday:used, creditsDate:today};
+    if(data.ErrorInfo) throw new Error(data.ErrorInfo);
+    S.weatherCache={fetchedAt:Date.now(), data, creditsRemaining:data.APICreditsRemainingToday};
     save();
-    toast('Astrospheric forecast updated ('+used+'/100 credits used today).');
+    toast('Astrospheric forecast updated ('+(data.APICreditCostOfCall??'?')+' credits used, '+(data.APICreditsRemainingToday??'?')+' left this month).');
     return data;
   }catch(e){
     console.error(e);
@@ -1197,60 +1208,51 @@ async function fetchWeather(force){
     return null;
   }
 }
-/* Tolerant parser: find hourly series for cloud / transparency / seeing */
+/* v2 response: each requested variable is its own top-level array, each entry shaped
+   {Value:{ValueColor, ActualValue}, HourOffset, UTCForecastHour}. Real per-entry timestamps now —
+   no more inferring hour-from-index off a single start time (that was the fragile part before). */
+const ASTRO_FIELD_MAP={cloud:'Cloud', transparency:'Transparency', seeing:'Seeing', temp:'Temperature', dew:'DewPoint', wind:'Wind'};
 function parseWeather(data){
   if(!data) return null;
-  const out={start:null, hours:[]};
-  // find forecast start time
-  for(const k of Object.keys(data)){
-    if(/start.*time|time.*start/i.test(k) && (typeof data[k]==='string'||typeof data[k]==='number')){
-      const d=new Date(data[k]); if(!isNaN(d)) {out.start=d; break;}
-    }
-  }
   const series={};
-  function scan(obj,path){
-    if(!obj||typeof obj!=='object') return;
-    for(const [k,v] of Object.entries(obj)){
-      const p=path?path+'.'+k:k;
-      if(Array.isArray(v) && v.length>4){
-        const key=/cloud/i.test(p)?'cloud':/transp/i.test(p)?'transparency':/seeing/i.test(p)?'seeing':/wind/i.test(p)&&!/direction/i.test(p)?'wind':/dew/i.test(p)?'dew':/smoke|aqi|air.?quality/i.test(p)?'smoke':/temp/i.test(p)?'temp':null;
-        if(key && !series[key]){
-          series[key]=v.map(x=>{
-            if(x==null) return null;
-            if(typeof x==='number') return x;
-            if(typeof x==='object'){ for(const kk of ['Value','value','Raw','raw','Data','data']) if(typeof x[kk]==='number') return x[kk]; }
-            return null;
-          });
-        }
-      } else if(typeof v==='object') scan(v,p);
-    }
+  for(const [key,apiName] of Object.entries(ASTRO_FIELD_MAP)){
+    const arr=data[apiName];
+    if(!Array.isArray(arr)) continue;
+    series[key]=arr.map(entry=>{
+      if(!entry) return null;
+      const t=entry.UTCForecastHour ? new Date(entry.UTCForecastHour) : null;
+      const v=(entry.Value && typeof entry.Value.ActualValue==='number') ? entry.Value.ActualValue : null;
+      return (t && !isNaN(t) && v!=null) ? {t,v} : null;
+    }).filter(Boolean);
   }
-  scan(data,'');
-  out.series=series;
-  const n=Math.max(...Object.values(series).map(a=>a.length),0);
-  out.n=n;
-  return out;
+  return {series};
+}
+let _astroParsed=null, _astroParsedFor=null;
+function astroParsed(){
+  const c=S.weatherCache; if(!c||!c.data) return null;
+  if(_astroParsedFor!==c.fetchedAt){ _astroParsed=parseWeather(c.data); _astroParsedFor=c.fetchedAt; }
+  return _astroParsed;
 }
 /* Cloud fraction (0..1) at a Date, or null */
 function cloudAt(date){
-  const c=S.weatherCache; if(!c||!c.data) return null;
-  const p=parseWeather(c.data); if(!p||!p.series.cloud||!p.start) return null;
-  const idx=Math.floor((date-p.start)/3600e3);
-  if(idx<0||idx>=p.series.cloud.length) return null;
-  const v=p.series.cloud[idx];
+  const v=seriesAt('cloud',date);
   return v==null?null:(v>1? v/100 : v);
 }
-/* Generic version of cloudAt for any parsed weather dimension (transparency, seeing, dew, temp) —
-   these were already being tolerantly extracted from Astrospheric's response but never surfaced anywhere. */
+/* Generic version of cloudAt for any parsed weather dimension — nearest real timestamp within 45
+   min, same matching approach tempestSeriesAt already uses (v2 gives every entry its own real
+   UTCForecastHour now, so this is no longer index math against a single inferred start time). */
 function seriesAt(key, date){
-  const c=S.weatherCache; if(!c||!c.data) return null;
-  const p=parseWeather(c.data); if(!p||!p.series[key]||!p.start) return null;
-  const idx=Math.floor((date-p.start)/3600e3);
-  if(idx<0||idx>=p.series[key].length) return null;
-  return p.series[key][idx];
+  const p=astroParsed(); if(!p||!p.series[key]) return null;
+  let best=null,bestDiff=Infinity;
+  for(const pt of p.series[key]){ const diff=Math.abs(pt.t-date); if(diff<bestDiff){bestDiff=diff;best=pt;} }
+  if(!best||bestDiff>45*60e3) return null;
+  return best.v;
 }
-/* Unit conversions — confirmed against Astrospheric's own published API docs (GetForecastData_V1):
-   RDPS_Temperature/RDPS_DewPoint are Kelvin (200-350), RDPS_WindVelocity is m/s (0-55). Not ambiguous. */
+/* Unit conversions. mph is confirmed (docs: "10 m wind speed" is SI, consistent with v1's m/s).
+   Kelvin for Temperature/DewPoint is carried over from v1's confirmed docs — v2's docs don't state
+   a unit for these two, so this is an ASSUMPTION, not verified. If a displayed temp looks obviously
+   wrong (e.g. summer Arizona reading as freezing), this is the first place to check — don't trust
+   it blind the way the old magnitude-guessing dew-risk bug did. */
 function k2f(k){ return k==null?null:(k-273.15)*9/5+32; }
 function mps2mph(v){ return v==null?null:v*2.23694; }
 /* Dew-point spread: since Kelvin and Celsius degrees are the same size, a plain Kelvin-vs-Kelvin
@@ -2016,7 +2018,7 @@ function initShell(){
   $('#reload-btn').onclick=()=>location.reload();
   PREV_VISIT=S.lastVisit; S.lastVisit=Date.now(); save();
   const today=new Date(); if(today.getHours()<10) today.setDate(today.getDate()-1);
-  const todayStr=today.toISOString().slice(0,10);
+  const todayStr=localDateStr(today);
   // Only snap forward if the stored date is stale (in the past) — a future date means you
   // deliberately navigated ahead to plan, and that's not something to silently undo.
   const dstr = (!S.uiNight || S.uiNight<todayStr) ? todayStr : S.uiNight;
@@ -2034,7 +2036,7 @@ function initShell(){
   ps.addEventListener('change',()=>{ S.activeProfile=ps.value; save(); renderAll(); });
   setInterval(()=>{ $('#foot-clock').textContent=new Date().toLocaleTimeString([],{hour12:false}); },1000);
   const L=S.location;
-  $('#sidebar .foot').innerHTML=`${L.lat.toFixed(4)} ${L.lon<0?'−':''}${Math.abs(L.lon).toFixed(4)}<br>SQM ${L.sqm} · B${L.bortle}<br><span id="foot-clock"></span><br><span style="opacity:.6">Build ${BUILD_ID}</span>`;
+  $('#sidebar .foot').innerHTML=`${L.lat.toFixed(4)} ${L.lon<0?'−':''}${Math.abs(L.lon).toFixed(4)}<br>SQM ${L.sqm} · B${L.bortle}<br><span id="foot-clock"></span><br>Build ${BUILD_ID}`;
 }
 function renderTopbar(){
   const ps=$('#profilesel');
@@ -2097,7 +2099,7 @@ function forecastProject(p){
   const start=new Date(); start.setHours(12,0,0,0);
   let found=0;
   for(let i=0;i<60 && found<out.sessionsNeeded;i++){
-    const ds=new Date(start.getTime()+i*86400e3).toISOString().slice(0,10);
+    const ds=localDateStr(new Date(start.getTime()+i*86400e3));
     const ev=nightEvents(ds);
     const tn=targetNight(t,ev,{moonSep:S.session.moonSepDefault});
     const usable=tn.windows.reduce((a,w)=>a+w.minutes,0);
@@ -2127,7 +2129,7 @@ function renderTonight(){
       </div>
       <div class="spacer" style="flex:1"></div>
       <button class="btn small" id="wx-btn">${astroCached?'Refresh Astrospheric':'Fetch Astrospheric'}</button>
-      <span class="dim mono" style="font-size:11px">${creditsToday()}/100 credits today${astroCached?' · cached '+new Date(S.weatherCache.fetchedAt).toLocaleTimeString([],{hour12:false}):''}</span>
+      <span class="dim mono" style="font-size:11px">${astroCreditsRemaining()!=null?astroCreditsRemaining()+'/29,900 left this month':'—'}${astroCached?' · cached '+new Date(S.weatherCache.fetchedAt).toLocaleTimeString([],{hour12:false}):''}</span>
       ${tempestConfigured?`<button class="btn small" id="wx-tempest-btn">${tempestCached?'Refresh Tempest':'Fetch Tempest'}</button><span class="dim mono" style="font-size:11px">${tempestCached?'cached '+new Date(S.tempestCache.fetchedAt).toLocaleTimeString([],{hour12:false}):''}</span>`:''}
     </div>
     ${wxCached?'<div id="wx-strip" style="margin-top:8px"></div>':''}
@@ -2215,7 +2217,7 @@ function worstAcrossNight(field, dateStr){
 function renderForecast(){
   const pg=$('#page-forecast');
   const base=new Date(S.uiNight+'T00:00:00');
-  const days=[0,1,2].map(off=>{ const d=new Date(base); d.setDate(d.getDate()+off); return d.toISOString().slice(0,10); });
+  const days=[0,1,2].map(off=>{ const d=new Date(base); d.setDate(d.getDate()+off); return localDateStr(d); });
   const astroCached=S.weatherCache&&S.weatherCache.data, tempestCached=tempestHourly();
   pg.innerHTML=`
   <h2>3-Day Forecast</h2>
@@ -2597,7 +2599,7 @@ function drawMoonCal(){
   const start=new Date(); start.setHours(12,0,0,0);
   for(let i=0;i<28;i++){
     const d=new Date(start.getTime()+i*86400e3);
-    const ds=d.toISOString().slice(0,10);
+    const ds=localDateStr(d);
     const t=A.MakeTime(new Date(d.getTime()+9*3600e3));
     const ill=A.Illumination(A.Body.Moon,t).phase_fraction;
     const ph=A.MoonPhase(t);
@@ -2616,7 +2618,7 @@ async function bestNights(){
   const start=new Date(); start.setHours(12,0,0,0);
   const rows=[];
   for(let i=0;i<21;i++){
-    const ds=new Date(start.getTime()+i*86400e3).toISOString().slice(0,10);
+    const ds=localDateStr(new Date(start.getTime()+i*86400e3));
     const ev=nightEvents(ds);
     let best={score:-1};
     for(const id of ids){
@@ -2776,7 +2778,7 @@ function drawPlannerCal(){
   const start=new Date(); start.setHours(12,0,0,0);
   let h='';
   for(let i=0;i<21;i++){
-    const d=new Date(start.getTime()+i*86400e3); const ds=d.toISOString().slice(0,10);
+    const d=new Date(start.getTime()+i*86400e3); const ds=localDateStr(d);
     const t=A.MakeTime(new Date(d.getTime()+9*3600e3));
     const ill=A.Illumination(A.Body.Moon,t).phase_fraction; const ph=A.MoonPhase(t);
     const plan=S.futurePlans[ds];
@@ -3662,7 +3664,7 @@ function renderSettings(){
     <div class="fieldnote" id="st-anthstatus">Stored only in this browser's localStorage. Auto-selects Haiku for routine nights, Sonnet for complex ones — typically under a cent, rarely more than a few cents.</div>
     <label class="f">Astrospheric API key</label>
     <div class="row"><input type="password" id="st-astro" value="${esc(S.keys.astrospheric)}" placeholder="paste key" style="flex:1"><button class="btn small" id="st-astrotest">Test</button></div>
-    <div class="fieldnote" id="st-astrostatus">100 credits/day; each forecast fetch costs 5 — <b>the test button below uses a real fetch, so it spends 5 too.</b> The app caches for 3h. Reset your key on astrospheric.com if it was ever shared in plain text.</div>
+    <div class="fieldnote" id="st-astrostatus">v2 API — 29,900 credits/month pool, shared across all Astrospheric use on this key. This fetch costs ~110 (Cloud+Transparency+Seeing+Temp+DewPoint+Wind) — <b>the test button below uses a real fetch, so it spends the same.</b> The app caches for 3h. Get a current key from your Astrospheric profile page (astrospheric.com) — the account moved to v2 recently, an old v1 key may not work.</div>
     <label class="f">Telescopius proxy URL (Cloudflare Worker)</label>
     <div class="row"><input type="text" id="st-tel" value="${esc(S.telescopiusProxyUrl)}" placeholder="https://telescopius-proxy.<you>.workers.dev" style="flex:1"><button class="btn small" id="st-teltest">Test</button></div>
     <div class="fieldnote" id="st-telstatus">The API key lives only in the Worker's encrypted secret now — this app never sees or stores it. Test hits the free quote-of-the-day endpoint. Powers live target lists/search alongside the existing CSV import + deep links.</div>
@@ -3755,18 +3757,19 @@ function renderSettings(){
     const key=$('#st-astro').value.trim();
     const st=$('#st-astrostatus');
     if(!key){ st.innerHTML='<span class="bad">Paste a key first.</span>'; return; }
-    if(!confirm('This makes a real forecast request and spends 5 of your 100 daily Astrospheric credits. Continue?')) return;
+    if(!confirm('This makes a real forecast request and spends ~110 credits from your 29,900/month Astrospheric pool. Continue?')) return;
     const prevKey=S.keys.astrospheric;
     S.keys.astrospheric=key;
-    st.innerHTML='<span class="spin"></span> testing (real request, 5 credits)…';
+    st.innerHTML='<span class="spin"></span> testing (real request, ~110 credits)…';
     try{
       const data=await fetchWeather(true);
       if(!data) throw new Error('No data returned — check the key.');
       save();
-      st.innerHTML='<span class="good">✓ Connected — forecast received.</span> <span class="mono" style="font-size:11px">'+esc(JSON.stringify(data).slice(0,140))+'…</span>';
+      const firstTemp=data.Temperature&&data.Temperature[0]&&data.Temperature[0].Value&&data.Temperature[0].Value.ActualValue;
+      st.innerHTML='<span class="good">✓ Connected — forecast received.</span> '+(data.APICreditsRemainingToday!=null?data.APICreditsRemainingToday+' credits left this month. ':'')+(firstTemp!=null?'<span class="dim">First temp reading: '+firstTemp+' \u2014 sanity-check this against k2f() below; unit is unverified for v2.</span> ':'')+'<span class="mono" style="font-size:11px">'+esc(JSON.stringify(data).slice(0,200))+'…</span>';
     }catch(e){
       S.keys.astrospheric=prevKey;
-      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> Check the key is correct and hasn\u2019t been reset since it was pasted.';
+      st.innerHTML='<span class="bad">✗ '+esc(e.message)+'</span> Check the key is correct and current (accounts recently moved to v2 — an old key or the old endpoint may not work).';
     }
   };
   $('#st-teltest').onclick=async()=>{
@@ -3830,7 +3833,7 @@ function renderSettings(){
   $('#st-hrzpaste').onclick=()=>{ try{ const n=importHrz($('#st-hrztext').value); S.horizonSource='pasted manually'; save(); toast(n+' points applied.'); preserveSettingsInputs(renderSettings); }catch(err){ toast(err.message,true); } };
   if($('#st-exp')) $('#st-exp').onclick=async()=>{
     const d=structuredClone(S); d.keys={anthropic:'',astrospheric:''};
-    const name='NightRider-backup-'+new Date().toISOString().slice(0,10)+'.json';
+    const name='NightRider-backup-'+localDateStr()+'.json';
     const handle=await getFolder('backup', true);
     if(handle){ try{ const fh=await handle.getFileHandle(name,{create:true}); const w=await fh.createWritable(); await w.write(JSON.stringify(d,null,1)); await w.close(); toast('Backup saved to '+(S.folders.backup?.name||'backup folder')+' (API keys excluded).'); return; }catch(e){ toast('Folder write failed, downloading instead: '+e.message, true); } }
     download(name, JSON.stringify(d,null,1)); toast('Backup downloaded (API keys excluded).');
@@ -3862,7 +3865,7 @@ async function autoBackupSilent(){
     const handle=await getFolder('backup', false); // no prompt on boot; only if already granted
     if(!handle) return;
     const d=structuredClone(S); d.keys={anthropic:'',astrospheric:''};
-    const name='NightRider-backup-'+new Date().toISOString().slice(0,10)+'.json';
+    const name='NightRider-backup-'+localDateStr()+'.json';
     const fh=await handle.getFileHandle(name,{create:true});
     const w=await fh.createWritable(); await w.write(JSON.stringify(d,null,1)); await w.close();
   }catch(e){ /* silent — manual backup button remains available */ }
