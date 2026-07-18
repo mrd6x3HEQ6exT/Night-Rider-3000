@@ -1050,14 +1050,26 @@ function skyRate(prof, filt, sqm){
   const s=pixScale(prof);
   return N0*Math.pow(10,-0.4*sqm)*apertureCm2(prof)*(s*s)*prof.camera.qe*filt.skyFrac;
 }
-/* Optimal sub length (read-noise swamping): t = C·RN²/skyRate */
-function optimalSub(prof, filt, sqm, tolPct){
+/* Recommended sub length. Two real constraints, not one theoretical one:
+   1) Noise budget: t where (sky + dark-current) shot noise reaches `tol` above read noise.
+      Dark current used to be left out — negligible for broadband, but for narrowband under a
+      dark sky it can be a real fraction of the total budget (checked: ~40%+ for Ha here), so
+      leaving it out was solving a subtly wrong equation, not just an academic omission.
+   2) Practical ceiling: capped at 2x the filter's own `defaultExp` — what you actually dial in
+      for this filter today. That's real operating experience for THIS rig (guiding, star density,
+      dynamic range, everything a point-source saturation model would need real photometry to
+      estimate honestly) — a far more defensible bound than inventing a fake saturation formula.
+   Never returns an unbounded number; always feeds straight into snapToDarks. */
+function recommendedSub(prof, filt, sqm, tolPct){
   const tol=(tolPct??S.session.noiseTolerance)/100;
   const C = 1/((1+tol)*(1+tol)-1);
   const R = skyRate(prof, filt, sqm);
+  const dc = prof.camera.darkCurrent;
   const rn=filterCam(prof,filt).readNoise;
-  const t = C*rn*rn/Math.max(R,1e-9);
-  return {t, R, C};
+  const idealT = C*rn*rn/Math.max(R+dc,1e-9);
+  const ceiling = (filt.defaultExp||300)*2;
+  const t = Math.min(idealT, ceiling);
+  return {t, idealT, ceiling, R, dc, C};
 }
 function snapToDarks(t, darks){
   if(!darks||!darks.length) return {snap:t, gap:0};
@@ -1076,10 +1088,12 @@ function stackSNR(prof, filt, sqm, sb, subLen, hours){
   const snr1 = sig*t/Math.sqrt(sig*t + sky*t + dc*t + rn*rn);
   return snr1*Math.sqrt(n);
 }
-/* Noise penalty of using sub length t vs ideal (percent extra stack noise) */
+/* Noise penalty of using sub length t vs. the (sky+dark)-vs-read noise budget target — same basis
+   recommendedSub solves for, so this always answers "how much worse is my real snapped length
+   than the real recommended one," never against a discarded unbounded number. */
 function noisePenalty(prof, filt, sqm, t){
-  const R=skyRate(prof,filt,sqm), rn=filterCam(prof,filt).readNoise;
-  return (Math.sqrt(1+rn*rn/(R*t))-1)*100;
+  const R=skyRate(prof,filt,sqm), dc=prof.camera.darkCurrent, rn=filterCam(prof,filt).readNoise;
+  return (Math.sqrt(1+rn*rn/((R+dc)*t))-1)*100;
 }
 
 /* ============ Sky imagery (CDS hips2fits — DSS2 color, no key required) ============ */
@@ -1388,15 +1402,15 @@ function groundContext(dateStr, targetIds, constraints){
   L.push(`NIGHT OF ${dateStr}: astro dark ${fmtHM(ev.dusk18)} to ${fmtHM(ev.dawn18)} local. Moon ${(ev.moonIllum*100).toFixed(0)}% illuminated; moonrise ${fmtHM(ev.moonrise)}, moonset ${fmtHM(ev.moonset)}.`);
   L.push(`RIG: ${prof.name} — ${prof.scope.name} ${prof.scope.aperture}mm f/${(prof.scope.focalLength/prof.scope.aperture).toFixed(1)} FL ${prof.scope.focalLength}mm; ${prof.camera.name} gain ${prof.camera.gain} offset ${prof.camera.offset}, read noise ~${prof.camera.readNoise}e-; scale ${fov.scale.toFixed(2)}"/px, FOV ${fov.w.toFixed(1)}°×${fov.h.toFixed(1)}°. Mount ${prof.mount}. Guiding ${prof.guiding}.`);
   L.push(`DARK LIBRARY (s): ${prof.darks.join(', ')} — every recommended exposure MUST be one of these values.`);
-  L.push(`FILTERS + COMPUTED OPTIMAL SUBS (deterministic; treat as ground truth):`);
+  L.push(`FILTERS + RECOMMENDED SUBS (deterministic; treat as ground truth — these are real, practical exposure lengths already capped by dark-current-aware noise budget and this rig's own dialed-in defaults, not theoretical maximums):`);
   const mid=ev.mid;
   for(const f of prof.filters){
     const m=moonPos(mid);
     const sepRef = targetIds&&targetIds.length ? angSep(getTarget(targetIds[0]).ra,getTarget(targetIds[0]).dec,m.ra,m.dec) : 90;
     const sqm=skySQM(ev.moonIllum, m.alt, sepRef);
-    const o=optimalSub(prof,f,sqm);
+    const o=recommendedSub(prof,f,sqm);
     const sn=snapToDarks(o.t,prof.darks);
-    L.push(`  ${f.short} [${f.kind}]: sky ${o.R.toFixed(3)} e-/px/s @ eff SQM ${sqm.toFixed(2)}; ideal sub ${o.t.toFixed(0)}s -> snapped ${sn.snap}s (noise penalty ${noisePenalty(prof,f,sqm,sn.snap).toFixed(1)}%). Flat: brightness ${f.flatBright??'unset'}%${f.flatExp?', '+f.flatExp+'s':''}.`);
+    L.push(`  ${f.short} [${f.kind}]: sky ${o.R.toFixed(3)} e-/px/s @ eff SQM ${sqm.toFixed(2)}; recommended sub ${sn.snap}s (noise penalty ${noisePenalty(prof,f,sqm,sn.snap).toFixed(1)}%). Flat: brightness ${f.flatBright??'unset'}%${f.flatExp?', '+f.flatExp+'s':''}.`);
   }
   if(targetIds&&targetIds.length){
     L.push(`TARGETS (windows computed against altitude floor ${S.session.altFloor}°, custom horizon${S.horizon?' (imported)':' (none)'}, moon separation ${constraints&&constraints.moonSep?constraints.moonSep:S.session.moonSepDefault}°):`);
@@ -2330,7 +2344,7 @@ function drawChecklist(){
   if(!S.checklistState[ds]) S.checklistState[ds]={};
   const state=S.checklistState[ds];
   el.innerHTML=`<h3>Pre-session checklist</h3>
-    <div id="checklist-items">${S.checklistItems.map((item,i)=>`<label class="tog" style="display:block;margin:4px 0"><input type="checkbox" data-ci="${i}" ${state[i]?'checked':''}><span class="tr"></span>${esc(item)}</label>`).join('')}</div>
+    <div id="checklist-items">${S.checklistItems.map((item,i)=>`<div style="margin:4px 0"><label class="tog"><input type="checkbox" data-ci="${i}" ${state[i]?'checked':''}><span class="tr"></span>${esc(item)}</label></div>`).join('')}</div>
     <div class="row" style="margin-top:8px"><input type="text" id="ci-new" placeholder="Add item…" style="flex:1"><button class="btn small" id="ci-add">Add</button></div>`;
   el.querySelectorAll('[data-ci]').forEach(cb=>cb.onchange=()=>{ state[+cb.dataset.ci]=cb.checked; save(); });
   $('#ci-add').onclick=()=>{
@@ -2403,14 +2417,14 @@ function drawPlanCards(ev,tp,dateStr,containerId){
         ${tn.transit&&fc.lostMin>0?`<span class="warn" title="Meridian flip ~${fmtHM(tn.transit)}, ${S.session.flipCostMin}min budgeted for flip+resettle">Usable <b>${fmtDur(fc.windows.reduce((a,w)=>a+w.minutes,0))}</b> after flip cost</span>`:''}
         ${S.session.nauticalBroadband?`<span class="dim" title="Broadband filters may start/end during nautical twilight per Settings">Broadband window can extend into nautical twilight</span>`:''}
       </div>
-      <table><thead><tr><th>Filter</th><th>Sub (ideal→snap)</th><th>Penalty</th><th>Subs/hr</th></tr></thead><tbody>`;
+      <table><thead><tr><th>Filter</th><th>Sub</th><th>Penalty</th><th>Subs/hr</th></tr></thead><tbody>`;
     for(const f of prof.filters){
       const sqm=skySQM(ev.moonIllum, m.alt, sep);
-      const o=optimalSub(prof,f,sqm); const sn=snapToDarks(o.t,prof.darks);
+      const o=recommendedSub(prof,f,sqm); const sn=snapToDarks(o.t,prof.darks);
       const pen=noisePenalty(prof,f,sqm,sn.snap);
       const gapWarn=S.toggles.gapWarnings&&(sn.ratio>1.8||sn.ratio<0.55);
       h+=`<tr><td><span class="chip"><span class="dot" style="background:${f.color}"></span>${esc(f.short)}</span></td>
-        <td>${o.t<9999?o.t.toFixed(0):'>9999'}s → <b class="amber">${sn.snap}s</b>${gapWarn?` <span class="badge wn" title="Nearest dark is ${sn.ratio>1?((sn.ratio-1)*100).toFixed(0)+'% longer':((1-sn.ratio)*100).toFixed(0)+'% shorter'} than ideal — consider shooting a new master dark near ${Math.round(o.t)}s">gap</span>`:''}</td>
+        <td><b class="amber">${sn.snap}s</b>${gapWarn?` <span class="badge wn" title="Nearest dark is ${sn.ratio>1?((sn.ratio-1)*100).toFixed(0)+'% longer':((1-sn.ratio)*100).toFixed(0)+'% shorter'} than the recommended ${Math.round(o.t)}s — consider shooting a new master dark near there">gap</span>`:''}</td>
         <td class="${pen<8?'good':pen<20?'warn':'bad'}">${pen.toFixed(1)}%</td>
         <td class="dim">${Math.floor(3600/sn.snap)}</td></tr>`;
     }
@@ -2505,7 +2519,7 @@ function nightSheet(ev,tp){
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
     md+=`## ${t.id} — ${t.n}\nWindows: ${tn.windows.map(w=>fmtHM(w.from)+'–'+fmtHM(w.to)+' ('+fmtDur(w.minutes)+')').join(', ')||'none'}${tn.transit?` · Flip ~${fmtHM(tn.transit)}`:''} · Moon sep ${sep.toFixed(0)}°\n\n| Filter | Sub | Penalty | Subs/hr |\n|---|---|---|---|\n`;
     for(const f of prof.filters){
-      const sqm=skySQM(ev.moonIllum,m.alt,sep); const o=optimalSub(prof,f,sqm); const sn=snapToDarks(o.t,prof.darks);
+      const sqm=skySQM(ev.moonIllum,m.alt,sep); const o=recommendedSub(prof,f,sqm); const sn=snapToDarks(o.t,prof.darks);
       md+=`| ${f.short} | ${sn.snap}s | ${noisePenalty(prof,f,sqm,sn.snap).toFixed(1)}% | ${Math.floor(3600/sn.snap)} |\n`;
       usedFilters.add(f.id);
     }
@@ -2524,7 +2538,7 @@ function ninaExportDialog(tp){
   let h=`<h3>Export NINA sequence — ${esc(t.id)}</h3><div class="sub">Loads as a DSO container template. Review loop counts before running.</div><table><thead><tr><th></th><th>Filter</th><th>Exp (s)</th><th>Count</th></tr></thead><tbody>`;
   prof.filters.forEach((f,i)=>{
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
-    const sn=snapToDarks(optimalSub(prof,f,skySQM(ev.moonIllum,m.alt,sep)).t,prof.darks);
+    const sn=snapToDarks(recommendedSub(prof,f,skySQM(ev.moonIllum,m.alt,sep)).t,prof.darks);
     let remaining=20;
     if(proj&&proj.goals[f.id]){ const st=projectStatus(proj).find(r=>r.fid===f.id); if(st) remaining=Math.max(0,st.goal-st.done); }
     h+=`<tr><td><input type="checkbox" id="nx-on-${i}" ${f.kind!=='broadband'||sep>60?'checked':''}></td><td class="sans">${esc(f.short)}</td>
@@ -2577,7 +2591,7 @@ async function quickExportNina(tp){
   const blocks=[];
   prof.filters.forEach(f=>{
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
-    const sn=snapToDarks(optimalSub(prof,f,skySQM(ev.moonIllum,m.alt,sep)).t,prof.darks);
+    const sn=snapToDarks(recommendedSub(prof,f,skySQM(ev.moonIllum,m.alt,sep)).t,prof.darks);
     const lf=last&&last.filters&&last.filters[f.id];
     const on=lf?lf.on:(f.kind!=='broadband'||sep>60);
     if(!on) return;
@@ -3144,20 +3158,35 @@ async function ninaImportFlow(file){
   }catch(e){ toast('Import failed: '+e.message,true); }
 }
 /* ============ EXPOSURE LAB page ============ */
+/* Real captured progress for this target+filter, summed across any Project(s) that share both the
+   target and the active equipment profile — manual log entries and NINA imports both flow through
+   the same p.logs, so this reflects imports automatically with no extra wiring. Compares against
+   the project's OWN goal count (a number the user already set), not an invented SNR-derived target. */
+function labCaptured(targetId, profileId, filterId){
+  const projs = S.projects.filter(p=>p.targetId===targetId && p.profileId===profileId);
+  if(!projs.length) return null;
+  let done=0, goal=0, hasGoal=false;
+  for(const p of projs){
+    done += p.logs.filter(l=>l.filterId===filterId).reduce((a,l)=>a+l.count,0);
+    if(p.goals[filterId]){ goal+=p.goals[filterId].count; hasGoal=true; }
+  }
+  return {done, goal: hasGoal?goal:null, pct: hasGoal&&goal ? Math.round(done/goal*100) : null};
+}
 function renderLab(){
   const pg=$('#page-lab'); const prof=profile(); const ev=nightEvents(S.uiNight);
   const tp=tonightPlan();
   const tgtOpts=allTargets().map(t=>`<option value="${t.id}" ${tp.targets[0]===t.id?'selected':''}>${t.id} — ${esc(t.n)}</option>`).join('');
   pg.innerHTML=`<h2>Exposure Lab</h2>
-  <div class="sub">Deterministic sky-flux, optimal-sub, and SNR math for ${esc(prof.name)}. Approximate model — every input editable in Equipment.</div>
+  <div class="sub">Deterministic sky-flux and SNR math for ${esc(prof.name)}. Approximate model — every input editable in Equipment. Recommended subs are capped at 2× each filter's own dialed-in default, not a theoretical maximum.</div>
   <div class="card tight"><div class="row">
     <div><label class="f">Reference target (moon geometry + SB)</label><select id="lab-tgt" style="width:280px">${tgtOpts}</select></div>
     <div><label class="f">Noise tolerance</label><select id="lab-tol"><option value="5" ${S.session.noiseTolerance==5?'selected':''}>5% (strict)</option><option value="10" ${S.session.noiseTolerance==10?'selected':''}>10% (relaxed)</option></select></div>
     <div><label class="f">Moon</label><label class="tog" style="margin-top:6px"><input type="checkbox" id="lab-moon" checked><span class="tr"></span>Use tonight's moon</label></div>
   </div></div>
   <div class="card"><h3>Per-filter analysis</h3><div id="lab-table"></div></div>
-  <div class="card"><h3>Stacked SNR vs integration</h3><div id="lab-snr"></div>
-  <div class="fieldnote">Reference surface brightness from the selected target (${'sb'} mag/arcsec²). Relative comparisons between filters and durations are solid; absolute SNR values are approximate. Diamond marks the knee (diminishing returns).</div></div>`;
+  <div class="card"><h3>Stacked SNR — single night</h3><div id="lab-snr-single"></div></div>
+  <div class="card"><h3>Stacked SNR — multi-night (up to 40h)</h3><div id="lab-snr-multi"></div>
+  <div class="fieldnote">Reference surface brightness from the selected target. Relative comparisons between filters are solid; absolute SNR values are approximate. Diamond marks the knee where additional integration stops paying off much — read that against the curve, there's no single "good enough" number that holds across every target's brightness.</div></div>`;
   const draw=()=>{
     const t=getTarget($('#lab-tgt').value)||allTargets()[0];
     const useMoon=$('#lab-moon').checked;
@@ -3166,38 +3195,46 @@ function renderLab(){
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
     const sqm=useMoon?skySQM(ev.moonIllum,m.alt,sep):S.location.sqm;
     let h=`<div class="klist" style="margin-bottom:8px"><span>Eff. sky <b>${sqm.toFixed(2)} mag/arcsec²</b>${useMoon&&m.alt>0?` (moon ${(ev.moonIllum*100).toFixed(0)}% @ ${sep.toFixed(0)}° sep)`:''}</span><span>Read noise <b>${prof.camera.readNoise}e−</b></span><span>Scale <b>${pixScale(prof).toFixed(2)}″/px</b></span><span>Target SB <b>${t.sb} mag/arcsec²</b></span></div>
-    <table><thead><tr><th>Filter</th><th>Sky e−/px/s</th><th>Ideal sub</th><th>Snapped</th><th>Penalty</th><th>Sky:RN² @snap</th><th>SNR @2h</th><th>SNR @6h</th><th>SNR @12h</th></tr></thead><tbody>`;
+    <table><thead><tr><th>Filter</th><th>Sky e−/px/s</th><th>Recommended sub</th><th>Penalty</th><th>Noise budget @snap</th><th>Subs/hr</th><th>Captured</th></tr></thead><tbody>`;
     for(const f of prof.filters){
-      const o=optimalSub(prof,f,sqm,tol); const sn=snapToDarks(o.t,prof.darks);
+      const o=recommendedSub(prof,f,sqm,tol); const sn=snapToDarks(o.t,prof.darks);
       const pen=noisePenalty(prof,f,sqm,sn.snap);
-      const swamp=o.R*sn.snap/(prof.camera.readNoise**2);
+      const rn=filterCam(prof,f).readNoise;
+      const skyVar=o.R*sn.snap, readVar=rn*rn, darkVar=o.dc*sn.snap, totVar=skyVar+readVar+darkVar;
+      const skyPct=Math.round(skyVar/totVar*100), readPct=Math.round(readVar/totVar*100), darkPct=Math.max(0,100-skyPct-readPct);
+      const cap=labCaptured(t.id, prof.id, f.id);
+      const capHtml = cap==null ? '<span class="faint">—</span>' : cap.goal!=null ? `<b>${cap.done}</b>/${cap.goal} <span class="dim">(${cap.pct}%)</span>` : `<b>${cap.done}</b> <span class="faint">(no goal set)</span>`;
       h+=`<tr><td><span class="chip"><span class="dot" style="background:${f.color}"></span>${esc(f.short)}</span></td>
-      <td>${o.R.toFixed(3)}</td><td>${o.t>9999?'>9999':o.t.toFixed(0)}s</td><td class="amber"><b>${sn.snap}s</b></td>
+      <td>${o.R.toFixed(3)}</td><td class="amber"><b>${sn.snap}s</b></td>
       <td class="${pen<8?'good':pen<20?'warn':'bad'}">${pen.toFixed(1)}%</td>
-      <td class="${swamp>=1/((1+tol/100)**2-1)*0.8?'good':'warn'}">${swamp.toFixed(1)}×</td>
-      <td>${stackSNR(prof,f,sqm,t.sb,sn.snap,2).toFixed(1)}</td><td>${stackSNR(prof,f,sqm,t.sb,sn.snap,6).toFixed(1)}</td><td>${stackSNR(prof,f,sqm,t.sb,sn.snap,12).toFixed(1)}</td></tr>`;
+      <td class="dim" style="font-size:11px">sky ${skyPct}% · read ${readPct}% · dark ${darkPct}%</td>
+      <td class="dim">${Math.floor(3600/sn.snap)}</td>
+      <td>${capHtml}</td></tr>`;
     }
     $('#lab-table').innerHTML=h+'</tbody></table>';
-    drawSnrChart(prof,sqm,t);
+    drawSnrCharts(prof,sqm,t);
   };
   $('#lab-tgt').onchange=draw; $('#lab-tol').onchange=draw; $('#lab-moon').onchange=draw;
   draw();
 }
-function drawSnrChart(prof,sqm,t){
-  const W=1120,H=300,PL=48,PB=28,PT=12,PR=140;
-  const maxH=16;
+function drawSnrCharts(prof,sqm,t){
+  renderSnrPanel('lab-snr-single', prof, sqm, t, 10, 1);
+  renderSnrPanel('lab-snr-multi', prof, sqm, t, 40, 4);
+}
+function renderSnrPanel(containerId, prof, sqm, t, maxH, tickStep){
+  const W=1120,H=300,PL=48,PB=28,PT=12,PR=150;
   let maxS=0; const curves=[];
   for(const f of prof.filters){
-    const sn=snapToDarks(optimalSub(prof,f,sqm).t,prof.darks);
+    const sn=snapToDarks(recommendedSub(prof,f,sqm).t,prof.darks);
     const pts=[];
-    for(let hr=0.25; hr<=maxH; hr+=0.25){ const s=stackSNR(prof,f,sqm,t.sb,sn.snap,hr); pts.push([hr,s]); maxS=Math.max(maxS,s); }
+    for(let hr=maxH/40; hr<=maxH; hr+=maxH/40){ const s=stackSNR(prof,f,sqm,t.sb,sn.snap,hr); pts.push([hr,s]); maxS=Math.max(maxS,s); }
     curves.push({f,pts,snap:sn.snap});
   }
   const X=h=>PL+h/maxH*(W-PL-PR), Y=s=>H-PB-(s/maxS)*(H-PB-PT);
   let svg=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
   for(let g=0;g<=4;g++){ const y=PT+g*(H-PB-PT)/4;
     svg+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--line)"/><text x="${PL-6}" y="${y+4}" fill="var(--dim)" font-size="10" text-anchor="end" font-family="var(--mono)">${(maxS*(1-g/4)).toFixed(0)}</text>`; }
-  for(let hr=2;hr<=maxH;hr+=2) svg+=`<text x="${X(hr)}" y="${H-10}" fill="var(--dim)" font-size="10" text-anchor="middle" font-family="var(--mono)">${hr}h</text>`;
+  for(let hr=tickStep;hr<=maxH;hr+=tickStep) svg+=`<text x="${X(hr)}" y="${H-10}" fill="var(--dim)" font-size="10" text-anchor="middle" font-family="var(--mono)">${hr}h</text>`;
   curves.forEach((c,i)=>{
     const col=getComputedStyle(document.documentElement).getPropertyValue(c.f.color.match(/--[\w-]+/)?.[0]||'--dim').trim()||'#888';
     svg+=`<path d="M ${c.pts.map(p=>X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' L ')}" fill="none" stroke="${col}" stroke-width="1.8"/>`;
@@ -3205,10 +3242,15 @@ function drawSnrChart(prof,sqm,t){
     const r0=c.pts[3][1]-c.pts[0][1];
     let knee=null;
     for(let i=4;i<c.pts.length-3;i++){ if((c.pts[i+3][1]-c.pts[i][1])<r0*0.25){ knee=c.pts[i]; break; } }
-    if(knee) svg+=`<path d="M ${X(knee[0])} ${Y(knee[1])-5} l 4 5 l -4 5 l -4 -5 z" fill="${col}"/>`;
-    svg+=`<text x="${W-PR+8}" y="${PT+14+i*16}" fill="${col}" font-size="11" font-family="var(--mono)">${esc(c.f.short)} @${c.snap}s</text>`;
+    if(knee){
+      const kSubs=Math.floor(knee[0]*3600/c.snap);
+      svg+=`<path d="M ${X(knee[0])} ${Y(knee[1])-5} l 4 5 l -4 5 l -4 -5 z" fill="${col}"/>`;
+      svg+=`<text x="${X(knee[0])}" y="${Y(knee[1])-11}" fill="${col}" font-size="9" text-anchor="middle" font-family="var(--mono)" opacity=".85">${knee[0].toFixed(1)}h/${kSubs}sub</text>`;
+    }
+    const endSubs=Math.floor(maxH*3600/c.snap);
+    svg+=`<text x="${W-PR+8}" y="${PT+14+i*16}" fill="${col}" font-size="11" font-family="var(--mono)">${esc(c.f.short)} @${c.snap}s (${endSubs} subs/${maxH}h)</text>`;
   });
-  $('#lab-snr').innerHTML=svg+'</svg>';
+  $('#'+containerId).innerHTML=svg+'</svg>';
 }
 
 /* ============ AI ADVISOR page ============ */
