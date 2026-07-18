@@ -200,6 +200,20 @@ details.adv summary{cursor:pointer;color:var(--dim);font-size:12px}
 .fcday .fcsrc h5{font:600 10.5px var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:4px}
 .fcrow{display:flex;justify-content:space-between;font:12px var(--mono);padding:1px 0}
 .fcrow .k{color:var(--faint)}
+
+/* Checklist row controls */
+.ck-row{display:flex;align-items:center;gap:6px;margin:2px 0;padding:2px 4px;border-radius:6px}
+.ck-row.dragover{background:var(--panel3);outline:1px dashed var(--amber)}
+.ck-row .ck-drag{cursor:grab;color:var(--faint);font-size:14px;user-select:none;padding:0 2px}
+.ck-row .ck-drag:active{cursor:grabbing}
+.ck-row label.tog{flex:1}
+.ck-row .ck-btns{display:flex;gap:2px;opacity:.55}
+.ck-row .ck-btns:hover{opacity:1}
+.ck-row .ck-btn{background:none;border:none;color:var(--dim);cursor:pointer;font-size:12px;padding:2px 5px;border-radius:4px;line-height:1}
+.ck-row .ck-btn:hover{background:var(--panel3);color:var(--text)}
+.ck-row .ck-btn.ck-del:hover{color:var(--bad)}
+.ck-row .ck-btn:disabled{opacity:.3;cursor:default}
+.ck-row .ck-btn:disabled:hover{background:none;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -521,7 +535,7 @@ if(typeof structuredClone==='undefined'){
   window.structuredClone=o=>JSON.parse(JSON.stringify(o)); // every use in this app is plain JSON-safe state
 }
 const A = Astronomy; // embedded astronomy-engine
-const BUILD_ID = '2026-07-15 8:05 PM MST';
+const BUILD_ID = '2026-07-18 9:20 AM MST';
 
 /* Curated DSO catalog for the app's rig(s). Real FOV varies by active profile (e.g. mono/ASI2600MM
    ~3.0°×2.0°, OSC/ASI6200MC ~4.6°×3.1° — see fovDeg()); one target (Rho Oph, 240') exceeds the
@@ -677,12 +691,18 @@ const DEFAULT_STATE = {
   telescopiusProxyUrl:'',
   telescopiusEnrichment:{}, // id -> {telescopiusIds, telescopiusTypes, telescopiusNames} — for targets that already exist in the built-in catalog
   targetNotes:{}, // id -> user's own personal notes, distinct from telescopiusEnrichment which is imported metadata
-  checklistItems:['Dew heater on','Darks match tonight\'s gain/offset','Flat panel brightness matches plan','Camera cooling started','Guide camera focused'],
+  checklistItems:[
+    {id:'ck1', text:'Dew heater on'},
+    {id:'ck2', text:"Darks match tonight's gain/offset"},
+    {id:'ck3', text:'Flat panel brightness matches plan'},
+    {id:'ck4', text:'Camera cooling started'},
+    {id:'ck5', text:'Guide camera focused'},
+  ],
   checklistState:{}, // dateStr -> {itemIndex: bool}, resets naturally each night since it's keyed by date
   lastVisit:null,
   nina:{url:'http://localhost:1888', confirmed:false},
   ai:{model:'claude-haiku-4-5-20251001', citeNorms:true, autoModel:true},
-  toggles:{ninaExport:true, ninaImport:true, bside:true, mooncal:true, flipMarkers:true, backup:true, snrPanel:true, bestNights:true, gapWarnings:true, multiTarget:true, nightSheet:true, telescopiusLinks:true, telescopiusApi:false, targetThumbs:true, planner:true, imageQuality:true, aiReviewOnImport:false, autoBackupOnLoad:false, ninaDashboard:true, ninaLiveSync:false, ninaPush:true, altitudeChart:true, hfrChart:true, satelliteRisk:true, cooldownReminder:true, sessionChecklist:true, visitDigest:true},
+  toggles:{ninaExport:true, ninaImport:true, bside:true, mooncal:true, flipMarkers:true, backup:true, snrPanel:true, bestNights:true, gapWarnings:true, multiTarget:true, nightSheet:true, telescopiusLinks:true, telescopiusApi:false, targetThumbs:true, planner:true, imageQuality:true, aiReviewOnImport:false, autoBackupOnLoad:false, ninaDashboard:true, ninaLiveSync:false, ninaPush:true, altitudeChart:true, hfrChart:true, satelliteRisk:true, cooldownReminder:true, sessionChecklist:true, visitDigest:true, tonightPicks:true},
   weatherCache:null, // {fetchedAt, dateKey, data, creditsUsedToday, creditsDate} — Astrospheric only; stays on its own ~3h cache (100 credits/day cap)
   tempest:{stationId:'84253', token:'', confirmed:false},
   tempestCache:null, // {fetchedAt, data} — refreshed on the 30-min poll, not credit-limited like Astrospheric
@@ -721,6 +741,22 @@ function loadState(){
       for(const k of Object.keys(DEFAULT_STATE.weatherFields[tab][src])) if(!(k in s.weatherFields[tab][src])) s.weatherFields[tab][src][k]=DEFAULT_STATE.weatherFields[tab][src][k];
     for(const k of Object.keys(DEFAULT_STATE.tempest)) if(!(k in s.tempest)) s.tempest[k]=DEFAULT_STATE.tempest[k];
     for(const k of Object.keys(DEFAULT_STATE.wxAlert)) if(!(k in s.wxAlert)) s.wxAlert[k]=DEFAULT_STATE.wxAlert[k];
+    // Checklist items used to be plain strings with checked-state keyed by array index — that broke
+    // the moment items could be deleted or reordered (indices shift, history silently misattributes).
+    // Migrate to {id,text} once, remapping every saved night's checked state old-index -> new-id so
+    // nothing already recorded gets scrambled.
+    if(s.checklistItems && s.checklistItems.length && typeof s.checklistItems[0]==='string'){
+      const oldItems=s.checklistItems;
+      const idMap=oldItems.map((_,i)=>'ck'+(i+1));
+      s.checklistItems=oldItems.map((text,i)=>({id:idMap[i], text}));
+      if(s.checklistState){
+        for(const date of Object.keys(s.checklistState)){
+          const oldSt=s.checklistState[date], newSt={};
+          for(const k of Object.keys(oldSt)){ const nid=idMap[+k]; if(nid) newSt[nid]=oldSt[k]; }
+          s.checklistState[date]=newSt;
+        }
+      }
+    }
     return s;
   }catch(e){ console.error('state load failed',e); return structuredClone(DEFAULT_STATE); }
 }
@@ -1050,26 +1086,12 @@ function skyRate(prof, filt, sqm){
   const s=pixScale(prof);
   return N0*Math.pow(10,-0.4*sqm)*apertureCm2(prof)*(s*s)*prof.camera.qe*filt.skyFrac;
 }
-/* Recommended sub length. Two real constraints, not one theoretical one:
-   1) Noise budget: t where (sky + dark-current) shot noise reaches `tol` above read noise.
-      Dark current used to be left out — negligible for broadband, but for narrowband under a
-      dark sky it can be a real fraction of the total budget (checked: ~40%+ for Ha here), so
-      leaving it out was solving a subtly wrong equation, not just an academic omission.
-   2) Practical ceiling: capped at 2x the filter's own `defaultExp` — what you actually dial in
-      for this filter today. That's real operating experience for THIS rig (guiding, star density,
-      dynamic range, everything a point-source saturation model would need real photometry to
-      estimate honestly) — a far more defensible bound than inventing a fake saturation formula.
-   Never returns an unbounded number; always feeds straight into snapToDarks. */
-function recommendedSub(prof, filt, sqm, tolPct){
-  const tol=(tolPct??S.session.noiseTolerance)/100;
-  const C = 1/((1+tol)*(1+tol)-1);
-  const R = skyRate(prof, filt, sqm);
-  const dc = prof.camera.darkCurrent;
-  const rn=filterCam(prof,filt).readNoise;
-  const idealT = C*rn*rn/Math.max(R+dc,1e-9);
-  const ceiling = (filt.defaultExp||300)*2;
-  const t = Math.min(idealT, ceiling);
-  return {t, idealT, ceiling, R, dc, C};
+/* For the handful of places that genuinely need ONE number (a NINA export field has to prefill
+   with something, a night sheet needs one column) — just use the filter's own dialed-in default,
+   snapped to the nearest real calibrated dark. Not a computed "best" value; the full per-length
+   tradeoff belongs in exposureMenu() below, where a human can actually apply judgment per target. */
+function defaultSnap(prof, filt){
+  return snapToDarks(filt.defaultExp||300, prof.darks);
 }
 function snapToDarks(t, darks){
   if(!darks||!darks.length) return {snap:t, gap:0};
@@ -1094,6 +1116,52 @@ function stackSNR(prof, filt, sqm, sb, subLen, hours){
 function noisePenalty(prof, filt, sqm, t){
   const R=skyRate(prof,filt,sqm), dc=prof.camera.darkCurrent, rn=filterCam(prof,filt).readNoise;
   return (Math.sqrt(1+rn*rn/((R+dc)*t))-1)*100;
+}
+/* Is this filter even worth pointing at this target? Parses the target's own `pal` field
+   (e.g. "HOO/SHO/BB", "BB", "SHO") for which bands it actually has signal in — a pure reflection
+   nebula like M78 (pal:"BB") has essentially no narrowband emission-line content, so recommending
+   Ha/OIII/SII subs for it wastes a table row on something that'll capture almost nothing. Applies
+   catalog-wide, not just to one example target. Unknown/missing palette (custom or freshly-imported
+   Telescopius targets) never gets filtered — don't hide filters you have no grounds to hide. */
+function filterAppliesToTarget(filt, t){
+  if(!t || !t.pal || t.pal==='—') return true;
+  const letters=new Set(t.pal.toUpperCase().replace(/[^A-Z]/g,''));
+  if(filt.kind==='broadband'||filt.kind==='rgb') return letters.has('B');
+  if(filt.id==='Ha') return letters.has('H');
+  if(filt.id==='OIII') return letters.has('O');
+  if(filt.id==='SII') return letters.has('S');
+  return true;
+}
+/* Full per-length exposure menu for one filter: every real calibrated dark length, each with its
+   own noise penalty, subs/hr, subs that actually fit tonight's real usable window for this target
+   (same altitude-floor/horizon/moon/flip-cost engine as the rest of the app — not a generic hour
+   count), and subs remaining against the linked project's own goal. Deliberately no single "best"
+   pick: length also trades off against dew/wind/guiding/satellite/cosmic-ray risk and dynamic
+   range, none of which this app can see — that judgment call stays with you, in full view of the
+   real tradeoff instead of one number that quietly hides it. */
+function exposureMenu(prof, filt, sqm, t, ev){
+  const tn = (t && ev) ? targetNight(t, ev, {}) : null;
+  const tonightMin = tn ? tn.windows.reduce((a,w)=>a+w.minutes,0) : null;
+  const cap = (t && t.id) ? labCaptured(t.id, prof.id, filt.id) : null;
+  const remaining = cap && cap.goal!=null ? Math.max(0, cap.goal-cap.done) : null;
+  return (prof.darks||[]).slice().sort((a,b)=>a-b).map(len=>({
+    len,
+    penalty: noisePenalty(prof, filt, sqm, len),
+    subsPerHr: Math.floor(3600/len),
+    subsTonight: tonightMin!=null ? Math.floor(tonightMin*60/len) : null,
+    remaining,
+  }));
+}
+/* Shared chip rendering — used identically by the Lab and Tonight/Planner cards so the two can
+   never quietly disagree with each other the way the old single-number version could. */
+function exposureMenuHtml(menu){
+  return menu.map(row=>{
+    const cls = row.penalty<8?'ok':row.penalty<20?'wn':'bd';
+    const detail=[row.penalty.toFixed(1)+'% penalty', row.subsPerHr+'/hr'];
+    if(row.subsTonight!=null) detail.push(row.subsTonight+' tonight');
+    if(row.remaining!=null) detail.push(row.remaining+' remaining');
+    return `<span class="badge ${cls}" style="margin:1px 2px;cursor:default" title="${esc(detail.join(' · '))}">${row.len}s</span>`;
+  }).join('');
 }
 
 /* ============ Sky imagery (CDS hips2fits — DSS2 color, no key required) ============ */
@@ -1402,15 +1470,15 @@ function groundContext(dateStr, targetIds, constraints){
   L.push(`NIGHT OF ${dateStr}: astro dark ${fmtHM(ev.dusk18)} to ${fmtHM(ev.dawn18)} local. Moon ${(ev.moonIllum*100).toFixed(0)}% illuminated; moonrise ${fmtHM(ev.moonrise)}, moonset ${fmtHM(ev.moonset)}.`);
   L.push(`RIG: ${prof.name} — ${prof.scope.name} ${prof.scope.aperture}mm f/${(prof.scope.focalLength/prof.scope.aperture).toFixed(1)} FL ${prof.scope.focalLength}mm; ${prof.camera.name} gain ${prof.camera.gain} offset ${prof.camera.offset}, read noise ~${prof.camera.readNoise}e-; scale ${fov.scale.toFixed(2)}"/px, FOV ${fov.w.toFixed(1)}°×${fov.h.toFixed(1)}°. Mount ${prof.mount}. Guiding ${prof.guiding}.`);
   L.push(`DARK LIBRARY (s): ${prof.darks.join(', ')} — every recommended exposure MUST be one of these values.`);
-  L.push(`FILTERS + RECOMMENDED SUBS (deterministic; treat as ground truth — these are real, practical exposure lengths already capped by dark-current-aware noise budget and this rig's own dialed-in defaults, not theoretical maximums):`);
+  L.push(`FILTERS + FULL PER-LENGTH NOISE-PENALTY MENU (deterministic; treat as ground truth). There is no single "best" length — real practice trades length off against dew/wind/guiding/satellites/cosmic rays/dynamic range, none of which is computable here. Pick from what's actually in the dark library based on the session at hand, same as a human would:`);
   const mid=ev.mid;
   for(const f of prof.filters){
     const m=moonPos(mid);
     const sepRef = targetIds&&targetIds.length ? angSep(getTarget(targetIds[0]).ra,getTarget(targetIds[0]).dec,m.ra,m.dec) : 90;
     const sqm=skySQM(ev.moonIllum, m.alt, sepRef);
-    const o=recommendedSub(prof,f,sqm);
-    const sn=snapToDarks(o.t,prof.darks);
-    L.push(`  ${f.short} [${f.kind}]: sky ${o.R.toFixed(3)} e-/px/s @ eff SQM ${sqm.toFixed(2)}; recommended sub ${sn.snap}s (noise penalty ${noisePenalty(prof,f,sqm,sn.snap).toFixed(1)}%). Flat: brightness ${f.flatBright??'unset'}%${f.flatExp?', '+f.flatExp+'s':''}.`);
+    const R=skyRate(prof,f,sqm);
+    const menu=exposureMenu(prof,f,sqm,null,null).map(row=>`${row.len}s(${row.penalty.toFixed(0)}%)`).join(' ');
+    L.push(`  ${f.short} [${f.kind}]: sky ${R.toFixed(3)} e-/px/s @ eff SQM ${sqm.toFixed(2)}; darks: ${menu}. Your usual default here is ${f.defaultExp}s. Flat: brightness ${f.flatBright??'unset'}%${f.flatExp?', '+f.flatExp+'s':''}.`);
   }
   if(targetIds&&targetIds.length){
     L.push(`TARGETS (windows computed against altitude floor ${S.session.altFloor}°, custom horizon${S.horizon?' (imported)':' (none)'}, moon separation ${constraints&&constraints.moonSep?constraints.moonSep:S.session.moonSepDefault}°):`);
@@ -1467,6 +1535,7 @@ Rules:
 - When asked for a session plan, output a markdown table with EXACTLY these columns: Target name for each filter | Filter Name | Image Window | Exposure Length | Total Images Needed | Total Time per Filter. Add a final Grand Total row. Below it, a separate Flats table listing ONLY filters used this session with panel brightness (and exposure if known).
 - Respect the user's stated constraints (horizon walls, end times, B-side targets).
 - When recommending a target (not asked-about-by-name), weigh its apparent size against the RIG's stated FOV — every candidate line already states "fills ~X% of frame". This is a wide-field refractor, not a long-focal-length SCT/RASA: never recommend a target that's a poor size match for that FOV (e.g. a small galaxy or planetary nebula that fills only a few percent of frame) as if it were a great choice for this specific rig — a target that's technically visible tonight isn't automatically well-suited to it.
+- Only suggest a filter for a target if its palette actually supports it — every candidate line states the target's palette (e.g. "BB" = broadband/RGB only, no real narrowband signal; "SHO"/"HOO" = has real narrowband emission). Never suggest Ha/OIII/SII exposure time for a broadband-only (reflection nebula, galaxy, star cluster) target just because the filter exists in the rig.
 - ALWAYS refer to a filter by its exact short name from the FILTERS ground truth (e.g. "RGB Ultra", "Antlia 3nm") — never by manufacturer brand alone (e.g. never just "the Antlia filter"). The user owns multiple filters from the same manufacturer, so a bare brand name doesn't tell them which one; always name the specific filter, in the table AND in prose.`;
 }
 
@@ -1947,7 +2016,10 @@ function initShell(){
   $('#reload-btn').onclick=()=>location.reload();
   PREV_VISIT=S.lastVisit; S.lastVisit=Date.now(); save();
   const today=new Date(); if(today.getHours()<10) today.setDate(today.getDate()-1);
-  const dstr = S.uiNight || today.toISOString().slice(0,10);
+  const todayStr=today.toISOString().slice(0,10);
+  // Only snap forward if the stored date is stale (in the past) — a future date means you
+  // deliberately navigated ahead to plan, and that's not something to silently undo.
+  const dstr = (!S.uiNight || S.uiNight<todayStr) ? todayStr : S.uiNight;
   S.uiNight=dstr;
   $('#nightdate').value=dstr;
   $('#nightdate').addEventListener('change',e=>{ S.uiNight=e.target.value; save(); renderAll(); });
@@ -2060,6 +2132,7 @@ function renderTonight(){
     </div>
     ${wxCached?'<div id="wx-strip" style="margin-top:8px"></div>':''}
   </div>
+  ${S.toggles.tonightPicks?`<div class="card tight"><h3 style="margin-bottom:6px">Tonight's picks</h3><div id="tonight-picks"></div></div>`:''}
   ${S.toggles.sessionChecklist?'<div class="card tight" id="checklist-card"></div>':''}
   <div class="card">
     <h3>Night timeline</h3>
@@ -2091,11 +2164,30 @@ function renderTonight(){
   if($('#bn-btn')) $('#bn-btn').onclick=bestNights;
   if($('#nina-dash-btn')) $('#nina-dash-btn').onclick=refreshNinaDash;
   drawTimeline(ev,tp);
+  if(S.toggles.tonightPicks) drawTonightPicks(ev,tp);
   if(S.toggles.sessionChecklist) drawChecklist();
   if(wxCached) drawWeatherStrip(ev);
   if(S.toggles.altitudeChart) drawAltitudeChart(ev,tp,S.uiNight,'tl-alt-wrap');
   drawPlanCards(ev,tp);
   if(S.toggles.mooncal) drawMoonCal();
+}
+/* Same real scoring (usable time x moon quality x FOV fit) that already drives the add-target
+   dropdown and the AI Advisor's recommendations — just given a permanent, automatic spot on
+   Tonight instead of only showing up behind a dropdown click or a chat message. */
+function drawTonightPicks(ev,tp){
+  const el=$('#tonight-picks'); if(!el) return;
+  const picks=sortedByBest(ev).filter(t=>t._min>0 && !tp.targets.includes(t.id)).slice(0,5);
+  if(!picks.length){ el.innerHTML='<div class="fieldnote">Nothing new scores well tonight — everything worthwhile might already be on your plan below.</div>'; return; }
+  el.innerHTML=picks.map(t=>`<div class="row" style="justify-content:space-between;padding:3px 0">
+    <span>${esc(t.id)} — <span class="sans dim">${esc(t.n)}</span> <span class="dim" style="font-size:11px">(${TYPE_NAMES[t.type]||t.type}, up ${t.best})</span></span>
+    <button class="btn small" onclick="addTonight('${esc(t.id)}')">Add</button></div>`).join('');
+}
+function fitBadgeHtml(t, prof){
+  const fitRatio=frameFitRatio(t,prof);
+  const fitPct=Math.round(Math.min(fitRatio,1)*100);
+  const fitCls = fitRatio<FOV_HARD_CUTOFF ? 'bd' : (fitRatio<0.05||fitRatio>1.3) ? 'wn' : 'ok';
+  const fitTitle = fitRatio<FOV_HARD_CUTOFF ? 'Fills only '+fitPct+"% of frame — too small for this rig, really a long-focal-length (SCT/RASA) target" : fitRatio>1.3 ? "Larger than the frame — won't fully fit without a mosaic" : fitPct+'% of frame';
+  return {fitRatio, html:`<span class="badge ${fitCls}" title="${esc(fitTitle)}">${fitPct}%</span>`};
 }
 function sortedByBest(ev){
   return allTargets().map(t=>{
@@ -2338,19 +2430,58 @@ function drawWeatherStrip(ev){
 }
 /* Pre-session checklist — common hobby practice (one missed step, like a dew heater, can cost a whole
    night). Persisted per-date so it naturally starts fresh each session; items are user-editable. */
+let _ckDragId=null;
 function drawChecklist(){
   const el=$('#checklist-card'); if(!el) return;
   const ds=S.uiNight;
   if(!S.checklistState[ds]) S.checklistState[ds]={};
   const state=S.checklistState[ds];
+  const items=S.checklistItems;
   el.innerHTML=`<h3>Pre-session checklist</h3>
-    <div id="checklist-items">${S.checklistItems.map((item,i)=>`<div style="margin:4px 0"><label class="tog"><input type="checkbox" data-ci="${i}" ${state[i]?'checked':''}><span class="tr"></span>${esc(item)}</label></div>`).join('')}</div>
+    <div id="checklist-items">${items.map((item,i)=>`
+      <div class="ck-row" draggable="true" data-ckrow="${esc(item.id)}">
+        <span class="ck-drag" title="Drag to reorder">⠿</span>
+        <label class="tog"><input type="checkbox" data-ci="${esc(item.id)}" ${state[item.id]?'checked':''}><span class="tr"></span>${esc(item.text)}</label>
+        <span class="ck-btns">
+          <button class="ck-btn" data-up="${esc(item.id)}" title="Move up" ${i===0?'disabled':''}>▲</button>
+          <button class="ck-btn" data-down="${esc(item.id)}" title="Move down" ${i===items.length-1?'disabled':''}>▼</button>
+          <button class="ck-btn ck-del" data-del="${esc(item.id)}" title="Delete">✕</button>
+        </span>
+      </div>`).join('')}</div>
     <div class="row" style="margin-top:8px"><input type="text" id="ci-new" placeholder="Add item…" style="flex:1"><button class="btn small" id="ci-add">Add</button></div>`;
-  el.querySelectorAll('[data-ci]').forEach(cb=>cb.onchange=()=>{ state[+cb.dataset.ci]=cb.checked; save(); });
+  el.querySelectorAll('[data-ci]').forEach(cb=>cb.onchange=()=>{ state[cb.dataset.ci]=cb.checked; save(); });
+  const move=(id,dir)=>{
+    const i=items.findIndex(x=>x.id===id); const j=i+dir;
+    if(i<0||j<0||j>=items.length) return;
+    [items[i],items[j]]=[items[j],items[i]]; save(); drawChecklist();
+  };
+  el.querySelectorAll('[data-up]').forEach(b=>b.onclick=()=>move(b.dataset.up,-1));
+  el.querySelectorAll('[data-down]').forEach(b=>b.onclick=()=>move(b.dataset.down,1));
+  el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
+    const id=b.dataset.del;
+    S.checklistItems=items.filter(x=>x.id!==id); save(); drawChecklist();
+  });
   $('#ci-add').onclick=()=>{
     const v=$('#ci-new').value.trim(); if(!v) return;
-    S.checklistItems.push(v); save(); drawChecklist();
+    S.checklistItems.push({id:'ck'+Date.now().toString(36), text:v}); save(); drawChecklist();
   };
+  // Drag-and-drop reorder (native HTML5 DnD) — same reordering path as the arrow buttons, just
+  // driven by a drop position instead of a fixed ±1 step.
+  el.querySelectorAll('.ck-row').forEach(row=>{
+    row.addEventListener('dragstart',e=>{ _ckDragId=row.dataset.ckrow; if(e.dataTransfer) e.dataTransfer.effectAllowed='move'; });
+    row.addEventListener('dragover',e=>{ e.preventDefault(); if(row.dataset.ckrow!==_ckDragId) row.classList.add('dragover'); });
+    row.addEventListener('dragleave',()=>row.classList.remove('dragover'));
+    row.addEventListener('drop',e=>{
+      e.preventDefault(); row.classList.remove('dragover');
+      const targetId=row.dataset.ckrow;
+      if(!_ckDragId || _ckDragId===targetId) return;
+      const from=items.findIndex(x=>x.id===_ckDragId), to=items.findIndex(x=>x.id===targetId);
+      if(from<0||to<0) return;
+      const [moved]=items.splice(from,1); items.splice(to,0,moved);
+      save(); drawChecklist();
+    });
+    row.addEventListener('dragend',()=>{ _ckDragId=null; el.querySelectorAll('.ck-row').forEach(r=>r.classList.remove('dragover')); });
+  });
 }
 function removeFromPlan(dateStr,id){ const tp=planFor(dateStr); tp.targets=tp.targets.filter(x=>x!==id); tp.autoFill=false; save(); }
 async function syncNinaLive(pid){
@@ -2417,16 +2548,13 @@ function drawPlanCards(ev,tp,dateStr,containerId){
         ${tn.transit&&fc.lostMin>0?`<span class="warn" title="Meridian flip ~${fmtHM(tn.transit)}, ${S.session.flipCostMin}min budgeted for flip+resettle">Usable <b>${fmtDur(fc.windows.reduce((a,w)=>a+w.minutes,0))}</b> after flip cost</span>`:''}
         ${S.session.nauticalBroadband?`<span class="dim" title="Broadband filters may start/end during nautical twilight per Settings">Broadband window can extend into nautical twilight</span>`:''}
       </div>
-      <table><thead><tr><th>Filter</th><th>Sub</th><th>Penalty</th><th>Subs/hr</th></tr></thead><tbody>`;
+      <table><thead><tr><th>Filter</th><th>Exposure options <span class="dim" style="font-weight:400;text-transform:none">(hover a length for penalty/subs-hr/tonight/remaining)</span></th></tr></thead><tbody>`;
     for(const f of prof.filters){
+      if(!filterAppliesToTarget(f,t)) continue;
       const sqm=skySQM(ev.moonIllum, m.alt, sep);
-      const o=recommendedSub(prof,f,sqm); const sn=snapToDarks(o.t,prof.darks);
-      const pen=noisePenalty(prof,f,sqm,sn.snap);
-      const gapWarn=S.toggles.gapWarnings&&(sn.ratio>1.8||sn.ratio<0.55);
+      const menu=exposureMenu(prof,f,sqm,t,ev);
       h+=`<tr><td><span class="chip"><span class="dot" style="background:${f.color}"></span>${esc(f.short)}</span></td>
-        <td><b class="amber">${sn.snap}s</b>${gapWarn?` <span class="badge wn" title="Nearest dark is ${sn.ratio>1?((sn.ratio-1)*100).toFixed(0)+'% longer':((1-sn.ratio)*100).toFixed(0)+'% shorter'} than the recommended ${Math.round(o.t)}s — consider shooting a new master dark near there">gap</span>`:''}</td>
-        <td class="${pen<8?'good':pen<20?'warn':'bad'}">${pen.toFixed(1)}%</td>
-        <td class="dim">${Math.floor(3600/sn.snap)}</td></tr>`;
+        <td>${exposureMenuHtml(menu)}</td></tr>`;
     }
     h+=`</tbody></table>`;
     if(proj){
@@ -2517,10 +2645,12 @@ function nightSheet(ev,tp){
   for(const id of tp.targets){
     const t=getTarget(id); const tn=targetNight(t,ev,{moonSep:tp.moonSep});
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
-    md+=`## ${t.id} — ${t.n}\nWindows: ${tn.windows.map(w=>fmtHM(w.from)+'–'+fmtHM(w.to)+' ('+fmtDur(w.minutes)+')').join(', ')||'none'}${tn.transit?` · Flip ~${fmtHM(tn.transit)}`:''} · Moon sep ${sep.toFixed(0)}°\n\n| Filter | Sub | Penalty | Subs/hr |\n|---|---|---|---|\n`;
+    md+=`## ${t.id} — ${t.n}\nWindows: ${tn.windows.map(w=>fmtHM(w.from)+'–'+fmtHM(w.to)+' ('+fmtDur(w.minutes)+')').join(', ')||'none'}${tn.transit?` · Flip ~${fmtHM(tn.transit)}`:''} · Moon sep ${sep.toFixed(0)}°\n\n| Filter | Exposure options — length(penalty%) |\n|---|---|\n`;
     for(const f of prof.filters){
-      const sqm=skySQM(ev.moonIllum,m.alt,sep); const o=recommendedSub(prof,f,sqm); const sn=snapToDarks(o.t,prof.darks);
-      md+=`| ${f.short} | ${sn.snap}s | ${noisePenalty(prof,f,sqm,sn.snap).toFixed(1)}% | ${Math.floor(3600/sn.snap)} |\n`;
+      if(!filterAppliesToTarget(f,t)) continue;
+      const sqm=skySQM(ev.moonIllum,m.alt,sep);
+      const menu=exposureMenu(prof,f,sqm,t,ev).map(row=>`${row.len}s(${row.penalty.toFixed(0)}%)`).join(' ');
+      md+=`| ${f.short} | ${menu} |\n`;
       usedFilters.add(f.id);
     }
     md+='\n';
@@ -2535,10 +2665,12 @@ function ninaExportDialog(tp){
   const prof=profile(); const ev=nightEvents(S.uiNight); const m=moonPos(ev.mid);
   const t=getTarget(tp.targets[0]);
   const proj=S.projects.find(p=>p.targetId===t.id);
-  let h=`<h3>Export NINA sequence — ${esc(t.id)}</h3><div class="sub">Loads as a DSO container template. Review loop counts before running.</div><table><thead><tr><th></th><th>Filter</th><th>Exp (s)</th><th>Count</th></tr></thead><tbody>`;
-  prof.filters.forEach((f,i)=>{
+  const relevantFilters=prof.filters.filter(f=>filterAppliesToTarget(f,t));
+  const skipped=prof.filters.length-relevantFilters.length;
+  let h=`<h3>Export NINA sequence — ${esc(t.id)}</h3><div class="sub">Loads as a DSO container template. Review loop counts before running.${skipped?` <span class="dim">(${skipped} filter${skipped>1?'s':''} hidden — ${esc(t.pal)} palette doesn't support ${skipped>1?'them':'it'})</span>`:''}</div><table><thead><tr><th></th><th>Filter</th><th>Exp (s)</th><th>Count</th></tr></thead><tbody>`;
+  relevantFilters.forEach((f,i)=>{
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
-    const sn=snapToDarks(recommendedSub(prof,f,skySQM(ev.moonIllum,m.alt,sep)).t,prof.darks);
+    const sn=defaultSnap(prof,f);
     let remaining=20;
     if(proj&&proj.goals[f.id]){ const st=projectStatus(proj).find(r=>r.fid===f.id); if(st) remaining=Math.max(0,st.goal-st.done); }
     h+=`<tr><td><input type="checkbox" id="nx-on-${i}" ${f.kind!=='broadband'||sep>60?'checked':''}></td><td class="sans">${esc(f.short)}</td>
@@ -2550,7 +2682,7 @@ function ninaExportDialog(tp){
   modal(h);
   $('#nx-go').onclick=async()=>{
     const blocks=[]; const filtersState={};
-    prof.filters.forEach((f,i)=>{
+    relevantFilters.forEach((f,i)=>{
       const on=$('#nx-on-'+i).checked;
       filtersState[f.id]={on, exp:+$('#nx-exp-'+i).value, count:+$('#nx-cnt-'+i).value};
       if(on) blocks.push({filterName:f.name, pos:f.pos, exp:+$('#nx-exp-'+i).value, count:+$('#nx-cnt-'+i).value});
@@ -2589,9 +2721,9 @@ async function quickExportNina(tp){
   const proj=S.projects.find(p=>p.targetId===t.id);
   const last=S.lastExport[prof.id];
   const blocks=[];
-  prof.filters.forEach(f=>{
+  prof.filters.filter(f=>filterAppliesToTarget(f,t)).forEach(f=>{
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
-    const sn=snapToDarks(recommendedSub(prof,f,skySQM(ev.moonIllum,m.alt,sep)).t,prof.darks);
+    const sn=defaultSnap(prof,f);
     const lf=last&&last.filters&&last.filters[f.id];
     const on=lf?lf.on:(f.kind!=='broadband'||sep>60);
     if(!on) return;
@@ -2722,11 +2854,11 @@ function renderTargets(){
     $('#tg-table tbody').innerHTML=rows.map(({t,min,peak,clear})=>{
       const fitRatio=frameFitRatio(t,prof);
       const fitPct=Math.round(Math.min(fitRatio,1)*100);
-      const fitCls = fitRatio<FOV_HARD_CUTOFF ? 'bad' : (fitRatio<0.05||fitRatio>1.3) ? 'wn' : 'ok';
+      const fitCls = fitRatio<FOV_HARD_CUTOFF ? 'bd' : (fitRatio<0.05||fitRatio>1.3) ? 'wn' : 'ok';
       const fitTitle = fitRatio<FOV_HARD_CUTOFF ? 'Fills only '+fitPct+'% of frame — too small for this rig, really a long-focal-length (SCT/RASA) target' : fitRatio>1.3 ? "Larger than the frame — won't fully fit without a mosaic" : fitPct+'% of frame';
       return `<tr${clear.clears?'':' style="opacity:.45"'}>
       ${S.toggles.targetThumbs?`<td style="cursor:pointer" onclick="framingModal('${esc(t.id)}')"><img loading="lazy" src="${targetImageUrl(t)}" width="34" height="34" style="border-radius:4px;object-fit:cover;vertical-align:middle" onerror="this.style.display='none'"></td>`:''}
-      <td><b style="${S.toggles.targetThumbs?'cursor:pointer':''}" ${S.toggles.targetThumbs?`onclick="framingModal('${esc(t.id)}')"`:''}>${esc(t.id)}</b>${clear.clears?'':` <span class="badge bad" title="Best possible altitude here is only ${clear.bestAlt.toFixed(0)}°, limited by your ${clear.limitedBy} — this target structurally can't be usefully imaged from your location, not just tonight">never clears</span>`}</td><td class="sans">${esc(t.n)}${t.custom?' <span class="badge nt">custom</span>':''}</td>
+      <td><b style="${S.toggles.targetThumbs?'cursor:pointer':''}" ${S.toggles.targetThumbs?`onclick="framingModal('${esc(t.id)}')"`:''}>${esc(t.id)}</b>${clear.clears?'':` <span class="badge bd" title="Best possible altitude here is only ${clear.bestAlt.toFixed(0)}°, limited by your ${clear.limitedBy} — this target structurally can't be usefully imaged from your location, not just tonight">never clears</span>`}</td><td class="sans">${esc(t.n)}${t.custom?' <span class="badge nt">custom</span>':''}</td>
       <td class="sans dim">${TYPE_NAMES[t.type]||t.type}</td><td>${t.size}′</td>
       <td><span class="badge ${fitCls}" title="${esc(fitTitle)}">${fitPct}%</span></td>
       <td class="dim">${fmtRA(t.ra)} ${fmtDec(t.dec)}</td><td class="dim">${esc(t.pal)}</td>
@@ -2835,13 +2967,18 @@ async function telescopiusLiveModal(onImported){
         const data=await searchTelescopiusTargets({name, types:'DEEP_SKY_OBJECT'});
         const items=(data.page_results||data.objects||[]).slice(0,15);
         if(!items.length){ res.innerHTML='<span class="dim">No matches.</span>'; return; }
-        res.innerHTML=items.map((item,i)=>{
-          const t=telescopiusObjectToTarget(item);
-          if(!t) return '';
-          return `<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)">
-            <span>${esc(t.id)} — ${esc(t.n)} <span class="dim" style="font-size:11px">${(t.telescopiusTypes||[]).slice(0,3).map(esc).join(', ')}</span></span>
-            <button class="btn small" data-add="${i}">Add</button></div>`;
-        }).join('');
+        const prof=profile();
+        const withFit=items.map((item,i)=>{ const t=telescopiusObjectToTarget(item); if(!t) return null; const fb=fitBadgeHtml(t,prof); return {item,t,i,fitRatio:fb.fitRatio,fitHtml:fb.html}; })
+          .filter(Boolean).sort((a,b)=>{
+            // best-fit-first, where "best" means closest to filling a sensible fraction of frame —
+            // never hides a poor match, a name search means you're looking for something specific
+            const score=r=>r.fitRatio<0.05?r.fitRatio:r.fitRatio>1.3?1/r.fitRatio:1;
+            return score(b)-score(a);
+          });
+        res.innerHTML=`<div class="fieldnote" style="margin-bottom:6px">Sorted by fit for ${esc(prof.name)} — nothing hidden, poor matches just sort toward the bottom.</div>`+withFit.map(({t,i,fitHtml})=>
+          `<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)">
+            <span>${esc(t.id)} — ${esc(t.n)} <span class="dim" style="font-size:11px">${(t.telescopiusTypes||[]).slice(0,3).map(esc).join(', ')}</span> ${fitHtml}</span>
+            <button class="btn small" data-add="${i}">Add</button></div>`).join('');
         res.querySelectorAll('[data-add]').forEach(btn=>btn.onclick=()=>{
           const t=telescopiusObjectToTarget(items[+btn.dataset.add]);
           if(!t){ toast('Missing coordinates, could not add.',true); return; }
@@ -3175,11 +3312,16 @@ function labCaptured(targetId, profileId, filterId){
 function renderLab(){
   const pg=$('#page-lab'); const prof=profile(); const ev=nightEvents(S.uiNight);
   const tp=tonightPlan();
-  const tgtOpts=allTargets().map(t=>`<option value="${t.id}" ${tp.targets[0]===t.id?'selected':''}>${t.id} — ${esc(t.n)}</option>`).join('');
+  const allT=allTargets();
+  let labTgtId = tp.targets[0] || (allT[0]&&allT[0].id);
+  const tgtLabel=id=>{ const t=getTarget(id); return t?`${t.id} — ${t.n}`:''; };
   pg.innerHTML=`<h2>Exposure Lab</h2>
-  <div class="sub">Deterministic sky-flux and SNR math for ${esc(prof.name)}. Approximate model — every input editable in Equipment. Recommended subs are capped at 2× each filter's own dialed-in default, not a theoretical maximum.</div>
+  <div class="sub">Deterministic sky-flux and SNR math for ${esc(prof.name)}. Approximate model — every input editable in Equipment. No single "best" sub length — the full real tradeoff is shown per filter, capped only by what's actually in your dark library.</div>
   <div class="card tight"><div class="row">
-    <div><label class="f">Reference target (moon geometry + SB)</label><select id="lab-tgt" style="width:280px">${tgtOpts}</select></div>
+    <div style="position:relative"><label class="f">Reference target (moon geometry + SB)</label>
+      <input type="text" id="lab-tgt-q" autocomplete="off" style="width:280px" value="${esc(tgtLabel(labTgtId))}">
+      <div id="lab-tgt-list" style="display:none;position:absolute;z-index:30;top:100%;left:0;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;max-height:260px;overflow-y:auto;width:280px;box-shadow:0 8px 24px rgba(0,0,0,.4)"></div>
+    </div>
     <div><label class="f">Noise tolerance</label><select id="lab-tol"><option value="5" ${S.session.noiseTolerance==5?'selected':''}>5% (strict)</option><option value="10" ${S.session.noiseTolerance==10?'selected':''}>10% (relaxed)</option></select></div>
     <div><label class="f">Moon</label><label class="tog" style="margin-top:6px"><input type="checkbox" id="lab-moon" checked><span class="tr"></span>Use tonight's moon</label></div>
   </div></div>
@@ -3188,33 +3330,49 @@ function renderLab(){
   <div class="card"><h3>Stacked SNR — multi-night (up to 40h)</h3><div id="lab-snr-multi"></div>
   <div class="fieldnote">Reference surface brightness from the selected target. Relative comparisons between filters are solid; absolute SNR values are approximate. Diamond marks the knee where additional integration stops paying off much — read that against the curve, there's no single "good enough" number that holds across every target's brightness.</div></div>`;
   const draw=()=>{
-    const t=getTarget($('#lab-tgt').value)||allTargets()[0];
+    const t=getTarget(labTgtId)||allT[0];
     const useMoon=$('#lab-moon').checked;
     const tol=+$('#lab-tol').value; S.session.noiseTolerance=tol; save();
     const m=moonPos(ev.mid);
     const sep=angSep(t.ra,t.dec,m.ra,m.dec);
+    const moonUp=m.alt>0 && ev.moonIllum>0.005;
     const sqm=useMoon?skySQM(ev.moonIllum,m.alt,sep):S.location.sqm;
-    let h=`<div class="klist" style="margin-bottom:8px"><span>Eff. sky <b>${sqm.toFixed(2)} mag/arcsec²</b>${useMoon&&m.alt>0?` (moon ${(ev.moonIllum*100).toFixed(0)}% @ ${sep.toFixed(0)}° sep)`:''}</span><span>Read noise <b>${prof.camera.readNoise}e−</b></span><span>Scale <b>${pixScale(prof).toFixed(2)}″/px</b></span><span>Target SB <b>${t.sb} mag/arcsec²</b></span></div>
-    <table><thead><tr><th>Filter</th><th>Sky e−/px/s</th><th>Recommended sub</th><th>Penalty</th><th>Noise budget @snap</th><th>Subs/hr</th><th>Captured</th></tr></thead><tbody>`;
+    let h=`<div class="klist" style="margin-bottom:8px"><span>Eff. sky <b>${sqm.toFixed(2)} mag/arcsec²</b> ${useMoon?(moonUp?`(moon up: ${(ev.moonIllum*100).toFixed(0)}% illum @ ${sep.toFixed(0)}° sep — this is why sky/exposure numbers shift by target)`:"(moon down/negligible tonight — sky brightness is the same for every target, so exposure numbers below won't vary by target choice)"):'(moon geometry off — using flat location baseline)'}</span><span>Read noise <b>${prof.camera.readNoise}e−</b></span><span>Scale <b>${pixScale(prof).toFixed(2)}″/px</b></span><span>Target SB <b>${t.sb} mag/arcsec²</b></span></div>
+    <table><thead><tr><th>Filter</th><th>Sky e−/px/s</th><th>Exposure options <span class="dim" style="font-weight:400;text-transform:none">(hover for penalty/subs-hr/tonight/remaining)</span></th><th>Captured</th></tr></thead><tbody>`;
     for(const f of prof.filters){
-      const o=recommendedSub(prof,f,sqm,tol); const sn=snapToDarks(o.t,prof.darks);
-      const pen=noisePenalty(prof,f,sqm,sn.snap);
-      const rn=filterCam(prof,f).readNoise;
-      const skyVar=o.R*sn.snap, readVar=rn*rn, darkVar=o.dc*sn.snap, totVar=skyVar+readVar+darkVar;
-      const skyPct=Math.round(skyVar/totVar*100), readPct=Math.round(readVar/totVar*100), darkPct=Math.max(0,100-skyPct-readPct);
+      if(!filterAppliesToTarget(f,t)) continue;
+      const R=skyRate(prof,f,sqm);
+      const menu=exposureMenu(prof,f,sqm,t,ev);
       const cap=labCaptured(t.id, prof.id, f.id);
       const capHtml = cap==null ? '<span class="faint">—</span>' : cap.goal!=null ? `<b>${cap.done}</b>/${cap.goal} <span class="dim">(${cap.pct}%)</span>` : `<b>${cap.done}</b> <span class="faint">(no goal set)</span>`;
       h+=`<tr><td><span class="chip"><span class="dot" style="background:${f.color}"></span>${esc(f.short)}</span></td>
-      <td>${o.R.toFixed(3)}</td><td class="amber"><b>${sn.snap}s</b></td>
-      <td class="${pen<8?'good':pen<20?'warn':'bad'}">${pen.toFixed(1)}%</td>
-      <td class="dim" style="font-size:11px">sky ${skyPct}% · read ${readPct}% · dark ${darkPct}%</td>
-      <td class="dim">${Math.floor(3600/sn.snap)}</td>
+      <td>${R.toFixed(3)}</td>
+      <td>${exposureMenuHtml(menu)}</td>
       <td>${capHtml}</td></tr>`;
     }
     $('#lab-table').innerHTML=h+'</tbody></table>';
     drawSnrCharts(prof,sqm,t);
   };
-  $('#lab-tgt').onchange=draw; $('#lab-tol').onchange=draw; $('#lab-moon').onchange=draw;
+  const tgtQ=$('#lab-tgt-q'), tgtList=$('#lab-tgt-list');
+  const showList=filter=>{
+    const q=(filter||'').toLowerCase();
+    const matches=allT.filter(x=>!q||x.id.toLowerCase().includes(q)||x.n.toLowerCase().includes(q)).slice(0,40);
+    if(!matches.length){ tgtList.innerHTML='<div class="dim" style="padding:8px;font-size:12px">No matches</div>'; tgtList.style.display='block'; return; }
+    tgtList.innerHTML=matches.map(x=>`<div class="lab-tgt-opt" data-id="${esc(x.id)}" style="padding:6px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--line)">${esc(x.id)} — ${esc(x.n)}</div>`).join('');
+    tgtList.style.display='block';
+    tgtList.querySelectorAll('.lab-tgt-opt').forEach(opt=>{
+      opt.addEventListener('mouseenter',()=>opt.style.background='var(--panel3)');
+      opt.addEventListener('mouseleave',()=>opt.style.background='');
+      opt.addEventListener('mousedown',e=>{ // mousedown (not click) so it fires before the input's blur hides the list
+        e.preventDefault();
+        labTgtId=opt.dataset.id; tgtQ.value=tgtLabel(labTgtId); tgtList.style.display='none'; draw();
+      });
+    });
+  };
+  tgtQ.addEventListener('focus',()=>showList(''));
+  tgtQ.addEventListener('input',()=>showList(tgtQ.value));
+  tgtQ.addEventListener('blur',()=>setTimeout(()=>{ tgtList.style.display='none'; },150));
+  $('#lab-tol').onchange=draw; $('#lab-moon').onchange=draw;
   draw();
 }
 function drawSnrCharts(prof,sqm,t){
@@ -3225,7 +3383,7 @@ function renderSnrPanel(containerId, prof, sqm, t, maxH, tickStep){
   const W=1120,H=300,PL=48,PB=28,PT=12,PR=150;
   let maxS=0; const curves=[];
   for(const f of prof.filters){
-    const sn=snapToDarks(recommendedSub(prof,f,sqm).t,prof.darks);
+    const sn=defaultSnap(prof,f);
     const pts=[];
     for(let hr=maxH/40; hr<=maxH; hr+=maxH/40){ const s=stackSNR(prof,f,sqm,t.sb,sn.snap,hr); pts.push([hr,s]); maxS=Math.max(maxS,s); }
     curves.push({f,pts,snap:sn.snap});
