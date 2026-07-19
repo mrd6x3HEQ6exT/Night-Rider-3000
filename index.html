@@ -535,7 +535,7 @@ if(typeof structuredClone==='undefined'){
   window.structuredClone=o=>JSON.parse(JSON.stringify(o)); // every use in this app is plain JSON-safe state
 }
 const A = Astronomy; // embedded astronomy-engine
-const BUILD_ID = '2026-07-18 11:10 AM MST';
+const BUILD_ID = '2026-07-18 1:40 PM MST';
 
 /* Curated DSO catalog for the app's rig(s). Real FOV varies by active profile (e.g. mono/ASI2600MM
    ~3.0°×2.0°, OSC/ASI6200MC ~4.6°×3.1° — see fovDeg()); one target (Rho Oph, 240') exceeds the
@@ -713,17 +713,17 @@ const DEFAULT_STATE = {
   weatherFields:{
     tonight:{
       astro:{cloud:true, transparency:true, seeing:true, wind:true, dew:true, temp:false},
-      tempest:{temp:true, windAvg:true, windGust:true, precipProb:true, feelsLike:false, humidity:false, pressure:false, windDir:false, uv:false, solar:false, lux:false, dewpoint:false, wetBulb:false, strikeCount:false},
+      tempest:{temp:true, windAvg:true, windGust:true, precipProb:true, humidity:true, dewpoint:true, heater:true, feelsLike:false, pressure:false, windDir:false, uv:false, solar:false, lux:false, wetBulb:false, strikeCount:false},
     },
     forecast:{
       astro:{cloud:true, transparency:true, seeing:true, wind:true, dew:true, temp:false},
-      tempest:{temp:true, windAvg:true, windGust:true, precipProb:true, feelsLike:false, humidity:true, pressure:false, windDir:false, uv:false, solar:false, lux:false, dewpoint:false, wetBulb:false, strikeCount:false},
+      tempest:{temp:true, windAvg:true, windGust:true, precipProb:true, humidity:true, dewpoint:true, heater:true, feelsLike:false, pressure:false, windDir:false, uv:false, solar:false, lux:false, wetBulb:false, strikeCount:false},
     },
   },
   forecastSources:{astro:true, tempest:true}, // which source(s) show on the 3-Day Forecast tab
-  // Rain/damaging-gust alert engine — sourced from Tempest only (Astrospheric's API has no precip or
-  // gust field at all, so it structurally can't feed this). Checked every 30 min against the next 6h.
-  wxAlert:{enabled:true, rainProbPct:40, gustMph:35, snoozedUntil:0, dismissedUntil:0, lastFireKey:null},
+  // Rain/wind alert engine — thresholds now come directly from TEMPEST_FIELDS' classify() functions
+  // (same ones driving the display colors), not a separate duplicated pair of numbers.
+  wxAlert:{enabled:true, snoozedUntil:0, dismissedUntil:0, lastFullScanDate:null, flaggedEvents:[], firedMilestones:{}},
   uiNight:null,
 };
 
@@ -1345,7 +1345,7 @@ function tempestHourly(){
   return _tempestParsed;
 }
 const TEMPEST_KEY_PATTERNS={
-  temp:/^air_?temp(erature)?$/i, feelsLike:/feels_?like/i, humidity:/humidity/i,
+  temp:/air_?temp(erature)?/i, feelsLike:/feels_?like/i, humidity:/humidity/i,
   pressure:/station_?pressure|sea_?level_?pressure|^pressure$/i, precipProb:/precip.*prob/i,
   windAvg:/wind_?avg|^wind_?speed$/i, windGust:/wind_?gust/i, windDir:/wind_?direction|wind_?bearing/i,
   uv:/^uv$/i, solar:/solar_?radiation/i, lux:/brightness|^lux$/i, dewpoint:/dew_?point/i,
@@ -1365,18 +1365,23 @@ function tempestSeriesAt(key,date){
 }
 /* Tempest field registry — mirrors ASTRO_FIELDS' shape so Tonight/3-Day rendering can treat both
    sources identically. Requested units already come back as °F/mph/in via the query params above,
-   so these are display-only, no client-side conversion. */
+   so these are display-only, no client-side conversion.
+   Wind thresholds researched against real imaging-community discussion (Cloudy Nights, Stargazers
+   Lounge forums) and automated-observatory shutdown practice, then tightened toward the conservative
+   end given the rig's value: ~10mph is where star-trailing/blur commonly starts being visible,
+   15-20mph is where most imagers debate packing up, automated shutdown systems typically trigger
+   around 20-30mph gusts. */
 const TEMPEST_FIELDS=[
   {key:'temp', label:'Temp', get:date=>tempestSeriesAt('temp',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0F', classify:()=>null},
   {key:'feelsLike', label:'Feels like', get:date=>tempestSeriesAt('feelsLike',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0F', classify:()=>null},
   {key:'humidity', label:'Humidity', get:date=>tempestSeriesAt('humidity',date), fmt:v=>v==null?null:Math.round(v)+'%', classify:()=>null},
   {key:'pressure', label:'Pressure', get:date=>tempestSeriesAt('pressure',date), fmt:v=>v==null?null:v.toFixed(2)+' inHg', classify:()=>null},
   {key:'precipProb', label:'Rain chance', get:date=>tempestSeriesAt('precipProb',date), fmt:v=>v==null?null:Math.round(v)+'%',
-    classify:v=>v==null?null:(v<20?'go':v<=40?'caution':'nogo')},
+    classify:v=>v==null?null:(v<=0?'go':v<=10?'caution':'nogo')},
   {key:'windAvg', label:'Wind avg', get:date=>tempestSeriesAt('windAvg',date), fmt:v=>v==null?null:Math.round(v)+' mph',
-    classify:v=>v==null?null:(v<10?'go':v<=20?'caution':'nogo')},
+    classify:v=>v==null?null:(v<10?'go':v<=15?'caution':'nogo')},
   {key:'windGust', label:'Wind gust', get:date=>tempestSeriesAt('windGust',date), fmt:v=>v==null?null:Math.round(v)+' mph',
-    classify:v=>v==null?null:(v<15?'go':v<=30?'caution':'nogo')},
+    classify:v=>v==null?null:(v<15?'go':v<=25?'caution':'nogo')},
   {key:'windDir', label:'Wind dir', get:date=>tempestSeriesAt('windDir',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0', classify:()=>null},
   {key:'uv', label:'UV', get:date=>tempestSeriesAt('uv',date), fmt:v=>v==null?null:v.toFixed(1), classify:()=>null},
   {key:'solar', label:'Solar', get:date=>tempestSeriesAt('solar',date), fmt:v=>v==null?null:Math.round(v)+' W/m\u00b2', classify:()=>null},
@@ -1385,47 +1390,101 @@ const TEMPEST_FIELDS=[
   {key:'wetBulb', label:'Wet bulb', get:date=>tempestSeriesAt('wetBulb',date), fmt:v=>v==null?null:Math.round(v)+'\u00b0F', classify:()=>null},
   {key:'strikeCount', label:'Lightning', get:date=>tempestSeriesAt('strikeCount',date), fmt:v=>v==null?null:(v>0?v+' strikes':'none'),
     classify:v=>v==null?null:(v>0?'nogo':'go')},
+  /* Direct actionable Y/N instead of a raw spread number — computed from Tempest's own temp+dewpoint
+     (not Astrospheric's), 5°F threshold since Tempest returns Fahrenheit (equivalent to the standard
+     ~3°C dew-risk rule of thumb: 3°C = 5.4°F). "Y" isn't a no-go — needing the heater is solved by
+     turning it on — so this uses caution/go only, never the red no-go tier. */
+  {key:'heater', label:'Heater', get:date=>{ const t=tempestSeriesAt('temp',date), d=tempestSeriesAt('dewpoint',date); return (t==null||d==null)?null:(t-d); },
+    fmt:v=>v==null?null:(v<5?'Y':'N'),
+    classify:v=>v==null?null:(v<5?'caution':'go')},
 ];
 
-/* ============ Weather alert engine (rain / damaging gust, next 6h, Tempest-sourced) ============
+/* ============ Weather alert engine (rain / wind, whole night, Tempest-sourced) ============
    Astrospheric structurally can't feed this — its API has no precipitation or gust field at all.
-   Polls every 30 min while the app is open. This is a foreground-only alert: it fires while Night
-   Rider is open in a tab, not a phone push notification when the app/tab is closed. Push notification
-   delivery (Web Push + a scheduled Cloudflare Worker) was deliberately deferred to a later session. */
-function wxAlertCheck(){
-  const a=S.wxAlert;
-  const hourly=tempestHourly(); if(!hourly) return null;
-  const now=Date.now(), horizon=now+6*3600e3;
-  let rainHit=null, gustHit=null;
+   Foreground-only: fires while Night Rider is open in a tab, not a phone push notification when the
+   app/tab is closed. Push notification delivery was deliberately deferred to a later session.
+
+   Design: once a day, scan the WHOLE night (2h before dusk to 2h after dawn — same window as the
+   Tonight grid) for any hour where rain chance / wind avg / wind gust reaches caution or worse,
+   using the exact same classify() functions that color the display — one set of thresholds, not a
+   duplicate copy that could drift. A 2% rain chance at 4am gets surfaced at the start of the night,
+   not silently held back until it's within the old 6h rolling window. Each flagged hour then gets
+   automatic re-alerts at 2h, 1h, and 30min before it arrives. A separate rolling check still runs
+   every poll in case the forecast changes and a new risk appears that the morning scan missed. */
+function scanNightForRisks(dateStr){
+  const hourly=tempestHourly(); if(!hourly) return [];
+  const ev=nightEvents(dateStr);
+  const duskAnchor=ev.dusk18||ev.sunset, dawnAnchor=ev.dawn18||ev.sunrise;
+  if(!duskAnchor||!dawnAnchor) return [];
+  const t0=duskAnchor.getTime()-2*3600e3, t1=dawnAnchor.getTime()+2*3600e3;
+  const riskFields=TEMPEST_FIELDS.filter(f=>['precipProb','windAvg','windGust'].includes(f.key));
+  const flagged=[];
   for(const h of hourly){
     if(!h._t) continue;
     const t=h._t.getTime();
-    if(t<now-30*60e3||t>horizon) continue;
-    const rp=tempestFieldFromItem(h,'precipProb');
-    if(rp!=null && rp>=a.rainProbPct && (!rainHit||rp>rainHit.value)) rainHit={value:rp, time:h._t};
-    const g=tempestFieldFromItem(h,'windGust');
-    if(g!=null && g>=a.gustMph && (!gustHit||g>gustHit.value)) gustHit={value:g, time:h._t};
+    if(t<t0||t>t1) continue;
+    for(const f of riskFields){
+      const v=tempestFieldFromItem(h,f.key); const cls=f.classify(v);
+      if(cls==='caution'||cls==='nogo') flagged.push({key:f.key, label:f.label, value:v, cls, time:h._t.toISOString()});
+    }
   }
-  return (rainHit||gustHit) ? {rainHit,gustHit} : null;
+  return flagged;
 }
-function showWxAlert(hit){
-  const parts=[];
-  if(hit.rainHit) parts.push(`<b>Rain</b> \u2014 ${Math.round(hit.rainHit.value)}% chance around ${fmtHM(hit.rainHit.time)}`);
-  if(hit.gustHit) parts.push(`<b>Damaging wind gust</b> \u2014 ${Math.round(hit.gustHit.value)} mph around ${fmtHM(hit.gustHit.time)}`);
-  $('#wxalert-title').textContent = hit.gustHit&&hit.rainHit ? 'Rain & Wind Warning' : hit.gustHit ? 'Wind Warning' : 'Rain Warning';
-  $('#wxalert-body').innerHTML = parts.join('<br>')+'<br><span class="dim" style="font-size:12px">Next 6 hours, from your Tempest station forecast.</span>';
+function showWxAlert(title, items){
+  $('#wxalert-title').textContent=title;
+  const fmtVal=it=>it.key==='precipProb' ? Math.round(it.value)+'% rain chance' : Math.round(it.value)+' mph';
+  const lines=items.map(it=>`<b>${esc(it.label)}</b> \u2014 ${fmtVal(it)} around ${fmtHM(new Date(it.time))} <span class="dim">(${it.cls==='nogo'?'no-go':'caution'})</span>`);
+  $('#wxalert-body').innerHTML=lines.join('<br>')+'<br><span class="dim" style="font-size:12px">From your Tempest station forecast.</span>';
   $('#wxalert-snooze').classList.remove('open');
   $('#wxalert-bg').classList.add('open');
 }
 function closeWxAlert(){ $('#wxalert-bg').classList.remove('open'); }
-async function pollWeatherAlert(){
+async function checkWeatherAlerts(){
   if(!S.wxAlert.enabled || !S.tempest.stationId || !S.tempest.token) return;
   await fetchTempestForecast(false);
-  const hit=wxAlertCheck();
+  const hourly=tempestHourly(); if(!hourly) return;
   const now=Date.now();
-  if(!hit) return; // condition cleared naturally — leave any open alert for the user to dismiss themselves
-  if(now<S.wxAlert.snoozedUntil || now<S.wxAlert.dismissedUntil) return;
-  showWxAlert(hit);
+  const today=localDateStr();
+  const suppressed = now<S.wxAlert.snoozedUntil || now<S.wxAlert.dismissedUntil;
+
+  if(S.wxAlert.lastFullScanDate!==today){
+    const flagged=scanNightForRisks(S.uiNight);
+    S.wxAlert.flaggedEvents=flagged;
+    S.wxAlert.firedMilestones={};
+    S.wxAlert.lastFullScanDate=today;
+    save();
+    if(flagged.length && !suppressed) showWxAlert('Tonight\u2019s Risk Summary', flagged);
+    return;
+  }
+
+  const milestones=[[2*3600e3,'2h Out'],[3600e3,'1h Out'],[30*60e3,'30min Out']];
+  for(const fe of S.wxAlert.flaggedEvents){
+    const untilMs=new Date(fe.time).getTime()-now;
+    for(const [ms,label] of milestones){
+      const fireKey=fe.key+'|'+fe.time+'|'+label;
+      if(S.wxAlert.firedMilestones[fireKey]) continue;
+      if(untilMs<=ms && untilMs>-30*60e3){
+        S.wxAlert.firedMilestones[fireKey]=true; save();
+        if(!suppressed) showWxAlert(label+' Reminder', [fe]);
+        return;
+      }
+    }
+  }
+
+  const sixH=now+6*3600e3;
+  const known=new Set(S.wxAlert.flaggedEvents.map(e=>e.key+'|'+e.time));
+  const riskFields=TEMPEST_FIELDS.filter(f=>['precipProb','windAvg','windGust'].includes(f.key));
+  const fresh=[];
+  for(const h of hourly){
+    if(!h._t) continue;
+    const t=h._t.getTime();
+    if(t<now-30*60e3||t>sixH) continue;
+    for(const f of riskFields){
+      const v=tempestFieldFromItem(h,f.key); const cls=f.classify(v);
+      if((cls==='caution'||cls==='nogo') && !known.has(f.key+'|'+h._t.toISOString())) fresh.push({key:f.key,label:f.label,value:v,cls,time:h._t.toISOString()});
+    }
+  }
+  if(fresh.length && !suppressed) showWxAlert('New Risk Detected', fresh);
 }
 function initWxAlert(){
   $('#wxalert-dismiss').onclick=()=>{ S.wxAlert.dismissedUntil=Date.now()+3*3600e3; save(); closeWxAlert(); };
@@ -1436,8 +1495,8 @@ function initWxAlert(){
 let _wxAlertTimer=null;
 function startWeatherAlertPolling(){
   if(_wxAlertTimer) clearInterval(_wxAlertTimer);
-  pollWeatherAlert();
-  _wxAlertTimer=setInterval(pollWeatherAlert, 30*60e3);
+  checkWeatherAlerts();
+  _wxAlertTimer=setInterval(checkWeatherAlerts, 30*60e3);
 }
 
 /* ============ Anthropic AI ============ */
@@ -2207,7 +2266,8 @@ function worstAcrossNight(field, dateStr){
   if(!ev.dusk18||!ev.dawn18) return {value:null, cls:null, time:null};
   const rank={go:0, caution:1, nogo:2};
   let worst=null, worstRank=-1, worstTime=null;
-  for(let t=ev.dusk18.getTime(); t<=ev.dawn18.getTime(); t+=3600e3){
+  const t0=ev.dusk18.getTime()-2*3600e3, t1=ev.dawn18.getTime()+2*3600e3;
+  for(let t=t0; t<=t1; t+=3600e3){
     const hr=new Date(t); const v=field.get(hr); const c=field.classify(v);
     if(c==null){ if(worst==null && v!=null){ worst=v; worstTime=hr; } continue; }
     if(rank[c]>worstRank){ worstRank=rank[c]; worst=v; worstTime=hr; }
@@ -2400,12 +2460,14 @@ function drawWxRows(fields, toggleSet, hours){
   const present=fields.filter(f=>toggleSet[f.key] && (f.get(hours[0])!=null||f.get(hours[Math.floor(hours.length/2)])!=null));
   if(!present.length) return null;
   let h='<table style="border-collapse:collapse"><tbody>';
+  h+='<tr><td></td>'+hours.map(hr=>`<td class="mono dim" style="font-size:9px;text-align:center;padding-bottom:2px">${hr.getHours()}</td>`).join('')+'</tr>';
   for(const f of present){
     h+=`<tr><td class="mono dim" style="font-size:10px;padding-right:6px;white-space:nowrap">${f.label}</td>`;
     for(const hr of hours){
       const v=f.get(hr); const cls=f.classify(v); const txt=f.fmt(v);
       const col = cls==='go'?'var(--sky-go)':cls==='caution'?'var(--sky-caution)':cls==='nogo'?'var(--sky-nogo)':v!=null?'var(--panel3)':'var(--panel3)';
-      h+=`<td style="width:18px;height:16px;background:${col};border:1px solid var(--bg)" title="${f.label} ${fmtHM(hr)}: ${txt||'no data'}"></td>`;
+      const textCol = (cls==null && v!=null) ? 'var(--text)' : 'transparent';
+      h+=`<td style="width:18px;height:16px;background:${col};border:1px solid var(--bg);font-size:8px;text-align:center;color:${textCol}" title="${f.label} ${fmtHM(hr)}: ${txt||'no data'}">${(f.key==='heater'&&txt)?txt:''}</td>`;
     }
     h+='</tr>';
   }
@@ -2415,7 +2477,11 @@ function drawWxRows(fields, toggleSet, hours){
 function drawWeatherStrip(ev){
   const el=$('#wx-strip'); if(!el) return;
   if(!ev.sunset||!ev.sunrise){ el.innerHTML=''; return; }
-  const t0=new Date(ev.sunset.getTime()-45*60e3), t1=new Date(ev.sunrise.getTime()+45*60e3);
+  // 2h before astronomical dusk through 2h after astronomical dawn — not sunset/sunrise, and not the
+  // old 45-min margin. Falls back to sunset/sunrise ±2h if dusk/dawn couldn't be computed (shouldn't
+  // happen at this latitude, but don't want a blank strip if it ever does).
+  const duskAnchor=ev.dusk18||ev.sunset, dawnAnchor=ev.dawn18||ev.sunrise;
+  const t0=new Date(duskAnchor.getTime()-2*3600e3), t1=new Date(dawnAnchor.getTime()+2*3600e3);
   const hours=[]; for(let t=t0.getTime(); t<t1.getTime(); t+=3600e3) hours.push(new Date(t));
   let out='';
   const astroHtml = S.weatherCache&&S.weatherCache.data ? drawWxRows(ASTRO_FIELDS, S.weatherFields.tonight.astro, hours) : null;
@@ -2427,7 +2493,7 @@ function drawWeatherStrip(ev){
   out += `<div class="fieldnote" style="margin-top:6px"><span class="skychip"><span class="dot" style="background:var(--sky-go)"></span>go</span> &nbsp;
     <span class="skychip"><span class="dot" style="background:var(--sky-caution)"></span>caution</span> &nbsp;
     <span class="skychip"><span class="dot" style="background:var(--sky-nogo)"></span>no-go</span> &nbsp;
-    <span class="skychip"><span class="dot" style="background:var(--panel3)"></span>informational / no data</span> &middot; smoke/aerosols are already folded into Transparency, not a separate row &middot; hover a cell for the exact hour &middot; edit which fields show in Settings</div>`;
+    <span class="skychip"><span class="dot" style="background:var(--panel3)"></span>informational / no data</span> &middot; hours shown in local (MST) 24h time, header row above each grid &middot; smoke/aerosols are already folded into Transparency, not a separate row &middot; hover a cell for the exact hour &middot; edit which fields show in Settings</div>`;
   el.innerHTML=out;
 }
 /* Pre-session checklist — common hobby practice (one missed step, like a dew heater, can cost a whole
@@ -3624,9 +3690,9 @@ function renderSettings(){
     <div class="row" style="margin-bottom:6px"><button class="btn small" id="st-nina-loc">Pull location from NINA</button>
     <span class="dim mono" style="font-size:11px">${L.source==='default'?'⚠ using placeholder default — set your real location':L.source==='nina'?'✓ pulled from NINA':'✓ manually set'}</span></div>
     <div id="st-nina-loc-status" class="fieldnote"></div>
-    <div class="row"><div><label class="f">Latitude</label><input type="number" id="st-lat" class="mid" value="${L.lat}" step="0.0001"></div>
-    <div><label class="f">Longitude</label><input type="number" id="st-lon" class="mid" value="${L.lon}" step="0.0001"></div>
-    <div><label class="f">Elev (m)</label><input type="number" id="st-elev" class="short" value="${L.elev}"></div></div>
+    <div class="row"><div><label class="f">Latitude (decimal \u00b0)</label><input type="number" id="st-lat" class="mid" value="${L.lat}" step="0.0001"></div>
+    <div><label class="f">Longitude (decimal \u00b0)</label><input type="number" id="st-lon" class="mid" value="${L.lon}" step="0.0001"></div>
+    <div><label class="f">Elev (ft)</label><input type="number" id="st-elev" class="short" value="${Math.round(L.elev*3.28084)}"></div></div>
     <div class="row"><div><label class="f">SQM (mag/arcsec²)</label><input type="number" id="st-sqm" class="short" value="${L.sqm}" step="0.01"></div>
     <div><label class="f">Bortle</label><input type="number" id="st-bortle" class="short" value="${L.bortle}" step="0.1"></div></div>
     <h3 style="margin-top:14px">Session defaults</h3>
@@ -3673,11 +3739,9 @@ function renderSettings(){
     <div style="flex:2"><label class="f">API token</label><input type="password" id="st-tempest-token" value="${esc(S.tempest.token)}" placeholder="paste your Tempest personal access token"></div>
     <button class="btn small" id="st-tempesttest" style="align-self:flex-end;margin-bottom:1px">Test</button></div>
     <div class="fieldnote" id="st-tempeststatus">Both stored only in this browser's localStorage, same as your other keys. Powers the second weather report on Tonight, the 3-Day Forecast tab, and the rain/gust alert (Astrospheric can't feed the alert — its API has no precipitation or gust field).</div>
-    <h3 style="margin-top:14px">Weather alert (rain / damaging gust, next 6h)</h3>
+    <h3 style="margin-top:14px">Weather alert (rain / wind, whole night)</h3>
     <label class="tog"><input type="checkbox" id="st-wxalert-on" ${S.wxAlert.enabled?'checked':''}><span class="tr"></span>Enabled</label>
-    <div class="row" style="margin-top:6px"><div><label class="f">Rain chance threshold (%)</label><input type="number" id="st-wxalert-rain" class="short" value="${S.wxAlert.rainProbPct}"></div>
-    <div><label class="f">Gust threshold (mph)</label><input type="number" id="st-wxalert-gust" class="short" value="${S.wxAlert.gustMph}"></div></div>
-    <div class="fieldnote">Checked every 30 min against your Tempest forecast, while the app is open in a tab. This is <b>not</b> a phone push notification — that's deliberately deferred (bring it up when you're ready to design it).</div>
+    <div class="fieldnote">Thresholds match the caution/no-go colors on the weather grid exactly — one set of numbers, not a separate copy that could drift out of sync. Once a day, scans the whole night (2h before dusk to 2h after dawn) for any hour hitting caution or worse on rain chance, wind avg, or wind gust; anything flagged gets a reminder again at 2h, 1h, and 30min before it arrives. Checked every 30 min while the app is open — not a phone push notification, that's deliberately deferred.</div>
     <h3 style="margin-top:14px">NINA Advanced API</h3>
     <label class="f">API base URL (host:port of the Advanced API plugin)</label>
     <div class="row"><input type="text" id="st-nina" value="${esc(S.nina.url)}" placeholder="http://localhost:1888" style="flex:1">
@@ -3701,7 +3765,7 @@ function renderSettings(){
   </div>
   <div class="row" style="margin-top:4px"><button class="btn primary" id="st-save">Save settings</button></div>`;
   $('#st-save').onclick=()=>{
-    L.lat=+$('#st-lat').value; L.lon=+$('#st-lon').value; L.elev=+$('#st-elev').value;
+    L.lat=+$('#st-lat').value; L.lon=+$('#st-lon').value; L.elev=(+$('#st-elev').value)/3.28084;
     L.sqm=+$('#st-sqm').value; L.bortle=+$('#st-bortle').value; L.source='manual'; L.name='Manually set';
     ses.altFloor=+$('#st-alt').value; ses.moonSepDefault=+$('#st-sep').value; ses.horizonOffset=+$('#st-hzo').value;
     ses.flipCostMin=+$('#st-flip').value||0; ses.nauticalBroadband=$('#st-naut').checked;
@@ -3711,7 +3775,6 @@ function renderSettings(){
     if(newTempestStation!==S.tempest.stationId || newTempestToken!==S.tempest.token) S.tempest.confirmed=false;
     S.tempest.stationId=newTempestStation; S.tempest.token=newTempestToken;
     S.wxAlert.enabled=$('#st-wxalert-on').checked;
-    S.wxAlert.rainProbPct=+$('#st-wxalert-rain').value||40; S.wxAlert.gustMph=+$('#st-wxalert-gust').value||35;
     const newNinaUrl=normalizeNinaUrl($('#st-nina').value);
     if(newNinaUrl!==S.nina.url) S.nina.confirmed=false;
     S.nina.url=newNinaUrl;
@@ -3816,7 +3879,7 @@ function renderSettings(){
     st.innerHTML='<span class="spin"></span> pulling from NINA…';
     try{
       const loc=await fetchNinaLocation();
-      $('#st-lat').value=loc.lat; $('#st-lon').value=loc.lon; $('#st-elev').value=loc.elev;
+      $('#st-lat').value=loc.lat; $('#st-lon').value=loc.lon; $('#st-elev').value=Math.round(loc.elev*3.28084);
       S.location.lat=loc.lat; S.location.lon=loc.lon; S.location.elev=loc.elev; S.location.source='nina'; S.location.name='Pulled from NINA'; save();
       st.innerHTML='<span class="good">✓ Pulled '+loc.lat.toFixed(4)+', '+loc.lon.toFixed(4)+'. Edit the fields below and Save to override manually.</span>';
     }catch(e){

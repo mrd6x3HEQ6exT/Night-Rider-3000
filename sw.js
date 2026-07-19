@@ -1,9 +1,17 @@
 // Night Rider 3000 — service worker
 // Only caches the app shell itself (so the planner still opens with no signal at the pier).
-// Every cross-origin request (Anthropic, Astrospheric, NINA, Telescopius, sky images) passes
+// Every cross-origin request (Anthropic, Astrospheric, Tempest, NINA, Telescopius, sky images) passes
 // straight through untouched — those need live data, never stale cached responses.
-const CACHE_NAME = 'nightrider-shell-v1';
+//
+// Network-first with a short timeout, falling back to cache: the old version served whatever was
+// cached first and only refreshed the cache in the background for NEXT time, so a fresh deploy
+// wouldn't actually reach the device until the load *after* the one that fetched it. This version
+// always tries the network first — a normal connection gets today's build immediately; only a
+// slow/dead connection (timeout or fetch failure) falls back to the last cached shell, so the app
+// still opens with no signal at the pier.
+const CACHE_NAME = 'nightrider-shell-v2';
 const SHELL_FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
+const NETWORK_TIMEOUT_MS = 3500;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -30,15 +38,22 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
 
   event.respondWith(
-    caches.match(req).then((cached) => {
-      const network = fetch(req).then((res) => {
-        if (res && res.status === 200 && res.type === 'basic') {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      try {
+        const network = await Promise.race([
+          fetch(req),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('sw network timeout')), NETWORK_TIMEOUT_MS)),
+        ]);
+        if (network && network.status === 200 && network.type === 'basic') {
+          cache.put(req, network.clone());
         }
-        return res;
-      }).catch(() => cached); // offline and nothing cached yet — let it fail naturally
-      return cached || network;
-    })
+        return network;
+      } catch (e) {
+        const cached = await cache.match(req);
+        if (cached) return cached;
+        throw e; // offline and nothing cached yet — let it fail naturally
+      }
+    })()
   );
 });
